@@ -6,12 +6,6 @@ echo "========================================"
 echo " Installing Ollama + Semantic Parser LLM "
 echo "========================================"
 
-# Resolve script location
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-echo "Script location:"
-echo "  $SCRIPT_DIR"
-
 echo "[1/5] Updating system..."
 sudo apt update
 
@@ -25,25 +19,13 @@ echo "[4/5] Verifying Ollama installation..."
 ollama --version
 
 echo "[5/5] Installing Python dependency: httpx..."
-pip3 install --user httpx
+pip3 install --user httpx --break-system-packages
 
 echo "----------------------------------------"
-echo " Creating Ollama model: cd-qwen-big"
+echo " Creating Ollama model: SRL-qwen"
 echo "----------------------------------------"
 
-MODELFILE_PATH="$SCRIPT_DIR/semantic_parser/Modelfile1"
-
-if [ ! -f "$MODELFILE_PATH" ]; then
-  echo "ERROR: Modelfile not found."
-  echo "Expected location:"
-  echo "  $MODELFILE_PATH"
-  echo ""
-  echo "Please ensure the repository structure is:"
-  echo "  <repo_root>/semantic_parser/Modelfile"
-  exit 1
-fi
-
-ollama create SRL-qwen -f "$MODELFILE_PATH"
+ollama create SRL-qwen -f Modelfile1
 
 echo "----------------------------------------"
 echo " Installation complete."
