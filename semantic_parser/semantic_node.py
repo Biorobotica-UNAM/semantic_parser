@@ -6,7 +6,7 @@ from semantic_parser_interfaces.srv import Parser
 
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "cd-qwen-big"
+MODEL_NAME = "SRL-qwen"
 
 
 class OllamaNode(Node):

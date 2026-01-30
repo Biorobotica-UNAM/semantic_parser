@@ -14,7 +14,6 @@ echo "  $SCRIPT_DIR"
 
 echo "[1/5] Updating system..."
 sudo apt update
-sudo apt upgrade -y
 
 echo "[2/5] Installing system dependencies..."
 sudo apt install -y curl python3-pip
@@ -23,7 +22,7 @@ echo "[3/5] Installing Ollama..."
 curl -fsSL https://ollama.com/install.sh | sh
 
 echo "[4/5] Verifying Ollama installation..."
-ollama version
+ollama --version
 
 echo "[5/5] Installing Python dependency: httpx..."
 pip3 install --user httpx
@@ -44,7 +43,7 @@ if [ ! -f "$MODELFILE_PATH" ]; then
   exit 1
 fi
 
-ollama create cd-qwen-big -f "$MODELFILE_PATH"
+ollama create SRL-qwen -f "$MODELFILE_PATH"
 
 echo "----------------------------------------"
 echo " Installation complete."
