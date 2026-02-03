@@ -1,0 +1,31 @@
+
+
+{
+  "go": "PTRANS",
+  "walk": "PTRANS",
+  "run": "PTRANS",
+  "move": "PTRANS",
+  "give": "ATRANS",
+  "bring": "ATRANS",
+  "send": "ATRANS",
+  "transfer": "ATRANS",
+  "look": "ATTEND",
+  "check": "ATTEND",
+  "inspect": "ATTEND",
+  "find": "ATTEND",
+  "take": "GRASP",
+  "grab": "GRASP",
+  "pick": "GRASP",
+  "release": "GRASP",
+  "fetch": "GRASP",
+  "eat": "INGEST",
+  "drink": "INGEST",
+  "say": "SPEAK",
+  "speak": "SPEAK",
+  "tell": "SPEAK",
+  "ask": "SPEAK",
+  "decide": "MBUILD",
+  "plan": "MBUILD",
+  "remember": "MBUILD",
+  "believe": "MBUILD"
+}

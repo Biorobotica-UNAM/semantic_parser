@@ -1,0 +1,15 @@
+<launch>
+
+  <group>
+    <push_ros_namespace namespace="semantic_parser" />
+
+    <node
+      pkg="semantic_parser"
+      exec="semantic_node"
+      name="semantic_node"
+      output="screen"
+    >
+    </node>
+
+  </group>
+</launch>
