@@ -6,6 +6,7 @@
   "run": "PTRANS",
   "move": "PTRANS",
   "navigate": "PTRANS",
+  "navigate_to": "PTRANS",
   "give": "ATRANS",
   "bring": "ATRANS",
   "send": "ATRANS",
