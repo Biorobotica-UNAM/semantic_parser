@@ -2,6 +2,7 @@ import rclpy
 import httpx
 import json
 import os
+from rclpy.logging import set_logger_level
 from rclpy.node import Node
 from semantic_parser_interfaces.srv import Parser
 from typing import Any, Dict, List
@@ -46,10 +47,13 @@ def map_fields_by_primitive(
         }
     if primitive == "MBUILD":
         return {"primitive": primitive, "actor": actor, "content": object_name}
+
+    if primitive == "WAIT":
+        return {"primitive": primitive, "actor": actor, "condition": object_name}
     return {"primitive": "DO", "actor": actor, "action": primitive}
 
 
-def map_to_primitive(action_json: Dict[str, Any]) -> Dict[str, Any]:
+def map_to_primitive(action_json: Dict[str, Any], logger) -> Dict[str, Any]:
     verb = action_json.get("action", "unknown").lower()
     object_name = action_json.get("object", "unknown")
     source = action_json.get("source", "unknown")
@@ -61,6 +65,8 @@ def map_to_primitive(action_json: Dict[str, Any]) -> Dict[str, Any]:
     if primitive == "SPEAK" and destination != "unknown":
         primitive = "MTRANS"
 
+    if primitive == "DO":
+        logger.warning(f"No se pudo mapear la action: {verb}")
     return map_fields_by_primitive(primitive, actor, object_name, source, destination)
 
 
@@ -92,7 +98,7 @@ class OllamaNode(Node):
             return response
 
         actions = llm_generate_cd(self.client, command)
-        cd_actions = [map_to_primitive(action) for action in actions]
+        cd_actions = [map_to_primitive(action, self.get_logger()) for action in actions]
 
         response.response = json.dumps(cd_actions)
         return response
