@@ -2,19 +2,19 @@ import rclpy
 import httpx
 import json
 import os
-from rclpy.logging import set_logger_level
+import time
 from rclpy.node import Node
 from semantic_parser_interfaces.srv import Parser
-from typing import Any, Dict, List, Self
+from typing import Any, Dict, List
 from pathlib import Path
 
 
-def load_verb_to_primitive(file_name: str) -> dict:
-    """Carga el JSON desde la carpeta del script."""
+def load_verb_to_primitive(file_name: str, logger=None) -> dict:
+    """Loads the JSON from the script folder."""
     file_path = (
         Path(os.getcwd()) / "src" / "semantic_parser" / "semantic_parser" / file_name
     )
-    print(file_path)
+
     if not file_path.exists():
         file_path = (
             Path(os.getcwd())
@@ -25,15 +25,23 @@ def load_verb_to_primitive(file_name: str) -> dict:
             / file_name
         )
 
+    if logger:
+        logger.info(f"Loading verb_to_cd from: {file_path}")
+
     try:
         with open(file_path, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        print("Error loading verb_to_cd JSON:", e)
+            data = json.load(f)
+            if logger:
+                logger.info(f"verb_to_cd loaded: {len(data)} verbs.")
+            return data
+    except FileNotFoundError:
+        if logger:
+            logger.error(f"JSON file not found: {file_path}")
         return {}
-
-
-VERB_TO_PRIMITIVE = load_verb_to_primitive("verb_to_cd.json")
+    except json.JSONDecodeError as e:
+        if logger:
+            logger.error(f"Invalid JSON in {file_path}: {e}")
+        return {}
 
 
 def map_fields_by_primitive(
@@ -60,58 +68,120 @@ def map_fields_by_primitive(
         }
     if primitive == "MBUILD":
         return {"primitive": primitive, "actor": actor, "content": object_name}
-
     if primitive == "WAIT":
         return {"primitive": primitive, "actor": actor, "condition": object_name}
     return {"primitive": "DO", "actor": actor, "action": primitive}
 
 
-def map_to_primitive(action_json: Dict[str, Any], logger) -> Dict[str, Any]:
+def map_to_primitive(
+    action_json: Dict[str, Any], verb_map: dict, logger
+) -> Dict[str, Any]:
     verb = action_json.get("action", "unknown").lower()
     object_name = action_json.get("object", "unknown")
     source = action_json.get("source", "unknown")
     destination = action_json.get("destination", "unknown")
     actor = action_json.get("actor", "robot")
 
-    primitive = VERB_TO_PRIMITIVE.get(verb, "DO")
+    primitive = verb_map.get(verb, "DO")
 
     if primitive == "SPEAK" and destination != "unknown":
         primitive = "MTRANS"
 
     if primitive == "DO":
-        logger.warning(f"No se pudo mapear la action: {verb}")
+        logger.warning(f"Could not map action: {verb}")
+
     return map_fields_by_primitive(primitive, actor, object_name, source, destination)
 
 
-def llm_generate_cd(client, command: str) -> List[Dict[str, Any]]:
-    payload = {"model": "SRL-qwen", "prompt": command, "stream": False}
-    try:
-        r = client.post("http://localhost:11434/api/generate", json=payload)
-        raw_text = r.json().get("response", "").strip()
-        return json.loads(raw_text)
-    except Exception as e:
-        print("LLM or JSON parse error:", e)
-        return []
-
-
-# --- Nodo ROS2 ---
+# --- ROS2 Node ---
 class OllamaNode(Node):
     def __init__(self):
         super().__init__("semantic_parser_node")
+
+        # HTTP client
         self.client = httpx.Client(timeout=60.0)
+
+        # Load verb dictionary with ROS logger
+        self.verb_map = load_verb_to_primitive("verb_to_cd.json", self.get_logger())
+
+        # Service
         self.srv = self.create_service(
             Parser, "semantic_parser", self.handle_parser_service
         )
+
+        # Initial check
+        self.check_ollama_once()
+
         self.get_logger().info("Semantic_parser service ready.")
+
+    def check_ollama_once(self):
+        """Checks if Ollama is alive at startup."""
+        try:
+            r = self.client.get("http://localhost:11434/api/tags")
+            if r.status_code == 200:
+                self.get_logger().info("Ollama is running (api/tags OK).")
+            else:
+                self.get_logger().warning(
+                    f"Ollama responded but returned status {r.status_code}."
+                )
+        except Exception as e:
+            self.get_logger().error(f"Could not connect to Ollama: {e}")
+
+    def llm_generate_cd(self, command: str) -> List[Dict[str, Any]]:
+        payload = {"model": "SRL-qwen", "prompt": command, "stream": False}
+
+        try:
+            r = self.client.post("http://localhost:11434/api/generate", json=payload)
+        except Exception as e:
+            self.get_logger().error(f"Connection error with Ollama: {e}")
+            return []
+
+        if r.status_code != 200:
+            self.get_logger().error(
+                f"Ollama returned status {r.status_code}: {r.text[:200]}"
+            )
+            return []
+
+        # Ollama usually returns {"response": "..."}
+        try:
+            raw_text = r.json().get("response", "").strip()
+        except Exception as e:
+            self.get_logger().error(f"Response is not valid JSON from Ollama: {e}")
+            return []
+
+        # Parse the JSON generated by the model
+        try:
+            return json.loads(raw_text)
+        except Exception as e:
+            self.get_logger().error(
+                f"The model returned text that is not JSON. Error: {e}. "
+                f"Text (truncated): {raw_text[:200]}"
+            )
+            return []
 
     def handle_parser_service(self, request, response):
         command = request.command.strip()
+
         if not command:
-            response.response = ""
+            self.get_logger().warning("Service called with an empty command.")
+            response.response = "[]"
             return response
 
-        actions = llm_generate_cd(self.client, command)
-        cd_actions = [map_to_primitive(action, self.get_logger()) for action in actions]
+        self.get_logger().info(f"Received command: '{command}'")
+
+        t0 = time.perf_counter()
+
+        actions = self.llm_generate_cd(command)
+        self.get_logger().info(f"Ollama returned {len(actions)} raw actions.")
+
+        cd_actions = [
+            map_to_primitive(a, self.verb_map, self.get_logger()) for a in actions
+        ]
+
+        dt_ms = (time.perf_counter() - t0) * 1000.0
+        self.get_logger().info(
+            f"Response ready: {len(cd_actions)} CD actions in {dt_ms:.1f} ms."
+        )
 
         response.response = json.dumps(cd_actions)
         return response
