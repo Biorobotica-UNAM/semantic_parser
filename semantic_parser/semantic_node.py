@@ -5,13 +5,26 @@ import os
 from rclpy.logging import set_logger_level
 from rclpy.node import Node
 from semantic_parser_interfaces.srv import Parser
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Self
+from pathlib import Path
 
 
 def load_verb_to_primitive(file_name: str) -> dict:
     """Carga el JSON desde la carpeta del script."""
-    base_dir = os.path.dirname(__file__)  # carpeta semantic_parser
-    file_path = os.path.join(base_dir, file_name)
+    file_path = (
+        Path(os.getcwd()) / "src" / "semantic_parser" / "semantic_parser" / file_name
+    )
+    print(file_path)
+    if not file_path.exists():
+        file_path = (
+            Path(os.getcwd())
+            / "src"
+            / "Planning"
+            / "semantic_parser"
+            / "semantic_parser"
+            / file_name
+        )
+
     try:
         with open(file_path, "r") as f:
             return json.load(f)
