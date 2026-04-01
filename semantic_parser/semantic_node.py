@@ -178,7 +178,10 @@ def map_fields_by_primitive(
             "to": destination,
         }
     if primitive in {"GRASP", "ATTEND", "INGEST"}:
-        return {"primitive": primitive, "actor": actor, "object": object_name}
+        data = {"primitive": primitive, "actor": actor, "object": object_name}
+        if location != "unknown":
+            data["location"] = location
+        return data
     if primitive == "SPEAK":
         return {"primitive": primitive, "actor": actor, "content": object_name}
     if primitive == "MTRANS":
