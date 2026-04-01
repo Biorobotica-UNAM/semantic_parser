@@ -43,6 +43,7 @@
   "respond":    "SPEAK",
   "greet":      "SOCIAL",
   "introduce":  "SOCIAL",
+  "salute":     "SOCIAL",
   "wave":       "SOCIAL",
   "meet":       "SOCIAL",
   "find":       "ATTEND",
