@@ -207,6 +207,7 @@ class SpacySRL:
     # ──────────────────────────────────────────────────────────────────────────
 
     def _find_direct_object(self, verb, token_set: set, context: Dict) -> Optional[str]:
+        # Caso normal: objeto directo
         for child in verb.children:
             if child.dep_ in ("dobj", "obj") and child.i in token_set:
                 if child.lower_ in HUMAN_PRONOUNS:
@@ -215,6 +216,20 @@ class SpacySRL:
                 if np.lower() in ANAPHORS:
                     return context.get("last_object", np)
                 return np
+
+        OBJECT_PREPS = {"for", "after", "at", "about"}
+        for child in verb.children:
+            if (
+                child.dep_ == "prep"
+                and child.lower_ in OBJECT_PREPS
+                and child.i in token_set
+            ):
+                for gc in child.children:
+                    if gc.dep_ == "pobj" and gc.i in token_set:
+                        np = self._noun_phrase(gc, token_set)
+                        if np.lower() in ANAPHORS:
+                            return context.get("last_object", np)
+                        return np
 
         for child in verb.children:
             if child.dep_ == "prep" and child.i in token_set:
