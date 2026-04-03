@@ -98,7 +98,7 @@ class SpacySRL:
     # Verbs that introduce a perceptual query when followed by
     # a WH-clause or a nominal object ("tell me the pose of...")
     _QUERY_VERBS: frozenset = frozenset(
-        {"tell", "say", "report", "describe", "inform", "show", "explain"}
+        {"tell", "say", "report", "describe", "inform", "show", "explain", "answer"}
     )
 
     # Pronouns that indicate a human recipient, not a direct object
@@ -137,6 +137,17 @@ class SpacySRL:
         """
         context = self._make_context()
         doc = self._nlp(text)
+
+        # DEBUG TEMPORAL
+        debug_lines = []
+        for token in doc:
+            debug_lines.append(
+                f"{token.text:15} dep={token.dep_:10} pos={token.pos_:6} head={token.head.text}"
+            )
+
+        with open("/tmp/spacy_debug.txt", "w") as f:
+            f.write("\n".join(debug_lines))
+
         clauses = self._split_clauses(doc)
 
         results = []
@@ -278,6 +289,7 @@ class SpacySRL:
         return lemma in self._QUERY_VERBS and (
             self._has_wh_subordinate(verb, token_set)
             or self._has_nominal_query(verb, token_set)
+            or self._has_implicit_query(verb, lemma, token_set)
         )
 
     def _find_destination(self, verb, token_set: set) -> Optional[str]:
@@ -453,6 +465,25 @@ class SpacySRL:
                 has_nominal_object = True
 
         return has_human_recipient and has_nominal_object
+
+    def _has_implicit_query(self, verb, lemma: str, token_set: set) -> bool:
+        """
+        True if the verb implies a query without an explicit human recipient.
+        Covers: "Answer the question", "Report the status", "Describe the person"
+        Pattern: QUERY_VERB + nominal dobj (no human pronoun required)
+        """
+        _IMPLICIT_QUERY_VERBS = {"answer", "report", "describe", "explain"}
+        if lemma not in _IMPLICIT_QUERY_VERBS:
+            return False
+        for child in verb.children:
+            if (
+                child.dep_ in ("dobj", "obj")
+                and child.lower_ not in self._HUMAN_PRONOUNS
+                and child.pos_ in ("NOUN", "DET", "PROPN")
+                and child.i in token_set
+            ):
+                return True
+        return False
 
     def _extract_query_content(self, verb, tokens: List, token_set: set) -> str:
         """

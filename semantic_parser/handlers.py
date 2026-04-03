@@ -239,6 +239,10 @@ class QueryExpansionHandler(PipelineHandler):
             "date",
             "weight",
             "height",
+            "question",
+            "answer",
+            "status",
+            "description",
         }
     )
 
