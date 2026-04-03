@@ -139,14 +139,14 @@ class SpacySRL:
         doc = self._nlp(text)
 
         # DEBUG TEMPORAL
-        debug_lines = []
-        for token in doc:
-            debug_lines.append(
-                f"{token.text:15} dep={token.dep_:10} pos={token.pos_:6} head={token.head.text}"
-            )
-
-        with open("/tmp/spacy_debug.txt", "w") as f:
-            f.write("\n".join(debug_lines))
+        # debug_lines = []
+        # for token in doc:
+        #     debug_lines.append(
+        #         f"{token.text:15} dep={token.dep_:10} pos={token.pos_:6} head={token.head.text}"
+        #     )
+        #
+        # with open("/tmp/spacy_debug.txt", "w") as f:
+        #     f.write("\n".join(debug_lines))
 
         clauses = self._split_clauses(doc)
 
