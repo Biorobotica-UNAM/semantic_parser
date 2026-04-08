@@ -1,195 +1,127 @@
-import rclpy
-import httpx
+"""
+ROS2 service node for natural language semantic parsing.
+
+Responsibility: expose the 'semantic_parser' ROS2 service and
+delegate all processing to the internal pipeline.
+
+The node itself knows nothing about NLP, verb mappings, or query
+expansion — those are handled by the pipeline handlers.
+
+Pipeline:
+    SRLHandler → MappingHandler → QueryExpansionHandler
+
+BioRobotics Laboratory, Facultad de Ingenieria, UNAM
+"""
+
 import json
-import os
 import time
+
+import rclpy
 from rclpy.node import Node
 from semantic_parser_interfaces.srv import Parser
-from typing import Any, Dict, List
-from pathlib import Path
+
+from semantic_parser.spacy_srl import SpacySRL
+from semantic_parser.handlers import (
+    SRLHandler,
+    MappingHandler,
+    QueryExpansionHandler,
+    load_verb_map,
+)
 
 
-def load_verb_to_primitive(file_name: str, logger=None) -> dict:
-    """Loads the JSON from the script folder."""
-    file_path = (
-        Path(os.getcwd()) / "src" / "semantic_parser" / "semantic_parser" / file_name
-    )
+class SemanticParserNode(Node):
+    """
+    ROS2 node that exposes the 'semantic_parser' service.
 
-    if not file_path.exists():
-        file_path = (
-            Path(os.getcwd())
-            / "src"
-            / "Planning"
-            / "semantic_parser"
-            / "semantic_parser"
-            / file_name
-        )
+    Responsibility: receive a natural language command,
+    run it through the parsing pipeline, and return
+    a JSON string with the resulting CD primitives.
 
-    if logger:
-        logger.info(f"Loading verb_to_cd from: {file_path}")
+    This class contains no NLP logic — it only wires together
+    the pipeline and handles ROS2 communication.
+    """
 
-    try:
-        with open(file_path, "r") as f:
-            data = json.load(f)
-            if logger:
-                logger.info(f"verb_to_cd loaded: {len(data)} verbs.")
-            return data
-    except FileNotFoundError:
-        if logger:
-            logger.error(f"JSON file not found: {file_path}")
-        return {}
-    except json.JSONDecodeError as e:
-        if logger:
-            logger.error(f"Invalid JSON in {file_path}: {e}")
-        return {}
+    _SPACY_MODEL = "en_core_web_trf"
 
-
-def map_fields_by_primitive(
-    primitive: str, actor: str, object_name: str, source: str, destination: str
-) -> Dict[str, Any]:
-    if primitive in {"PTRANS", "ATRANS"}:
-        return {
-            "primitive": primitive,
-            "actor": actor,
-            "object": object_name,
-            "from": source,
-            "to": destination,
-        }
-    if primitive in {"GRASP", "ATTEND", "INGEST"}:
-        return {"primitive": primitive, "actor": actor, "object": object_name}
-    if primitive == "SPEAK":
-        return {"primitive": primitive, "actor": actor, "content": object_name}
-    if primitive == "MTRANS":
-        return {
-            "primitive": primitive,
-            "actor": actor,
-            "content": object_name,
-            "to": destination,
-        }
-    if primitive == "MBUILD":
-        return {"primitive": primitive, "actor": actor, "content": object_name}
-    if primitive == "WAIT":
-        return {"primitive": primitive, "actor": actor, "condition": object_name}
-    return {"primitive": "DO", "actor": actor, "action": primitive}
-
-
-def map_to_primitive(
-    action_json: Dict[str, Any], verb_map: dict, logger
-) -> Dict[str, Any]:
-    verb = action_json.get("action", "unknown").lower()
-    object_name = action_json.get("object", "unknown")
-    source = action_json.get("source", "unknown")
-    destination = action_json.get("destination", "unknown")
-    actor = action_json.get("actor", "robot")
-
-    primitive = verb_map.get(verb, "DO")
-
-    if primitive == "SPEAK" and destination != "unknown":
-        primitive = "MTRANS"
-
-    if primitive == "DO":
-        logger.warning(f"Could not map action: {verb}")
-
-    return map_fields_by_primitive(primitive, actor, object_name, source, destination)
-
-
-# --- ROS2 Node ---
-class OllamaNode(Node):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("semantic_parser_node")
 
-        # HTTP client
-        self.client = httpx.Client(timeout=60.0)
+        self._pipeline = self._build_pipeline()
 
-        # Load verb dictionary with ROS logger
-        self.verb_map = load_verb_to_primitive("verb_to_cd.json", self.get_logger())
-
-        # Service
-        self.srv = self.create_service(
-            Parser, "semantic_parser", self.handle_parser_service
+        self._service = self.create_service(
+            Parser,
+            "semantic_parser",
+            self._handle_request,
         )
 
-        # Initial check
-        self.check_ollama_once()
+        self.get_logger().info("Semantic parser service ready.")
 
-        self.get_logger().info("Semantic_parser service ready.")
+    # ──────────────────────────────────────────────────────────────────────────
+    # Pipeline construction
+    # ──────────────────────────────────────────────────────────────────────────
 
-    def check_ollama_once(self):
-        """Checks if Ollama is alive at startup."""
-        try:
-            r = self.client.get("http://localhost:11434/api/tags")
-            if r.status_code == 200:
-                self.get_logger().info("Ollama is running (api/tags OK).")
-            else:
-                self.get_logger().warning(
-                    f"Ollama responded but returned status {r.status_code}."
-                )
-        except Exception as e:
-            self.get_logger().error(f"Could not connect to Ollama: {e}")
+    def _build_pipeline(self) -> SRLHandler:
+        """
+        Assemble the parsing pipeline.
 
-    def llm_generate_cd(self, command: str) -> List[Dict[str, Any]]:
-        payload = {"model": "SRL-qwen", "prompt": command, "stream": False}
+        Returns the first handler in the chain. Calling handle()
+        on it automatically runs all subsequent steps.
 
-        try:
-            r = self.client.post("http://localhost:11434/api/generate", json=payload)
-        except Exception as e:
-            self.get_logger().error(f"Connection error with Ollama: {e}")
-            return []
+        To add a new step, create a new handler class in handlers.py
+        and chain it here — no other code needs to change.
+        """
+        self.get_logger().info(f"Loading spaCy model ({self._SPACY_MODEL})...")
+        srl = SpacySRL(model=self._SPACY_MODEL)
+        self.get_logger().info("spaCy model ready.")
 
-        if r.status_code != 200:
-            self.get_logger().error(
-                f"Ollama returned status {r.status_code}: {r.text[:200]}"
+        verb_map = load_verb_map(self.get_logger())
+
+        first_handler = SRLHandler(srl)
+        (
+            first_handler.set_next(MappingHandler(verb_map)).set_next(
+                QueryExpansionHandler()
             )
-            return []
+        )
 
-        # Ollama usually returns {"response": "..."}
-        try:
-            raw_text = r.json().get("response", "").strip()
-        except Exception as e:
-            self.get_logger().error(f"Response is not valid JSON from Ollama: {e}")
-            return []
+        return first_handler
 
-        # Parse the JSON generated by the model
-        try:
-            return json.loads(raw_text)
-        except Exception as e:
-            self.get_logger().error(
-                f"The model returned text that is not JSON. Error: {e}. "
-                f"Text (truncated): {raw_text[:200]}"
-            )
-            return []
+    # ──────────────────────────────────────────────────────────────────────────
+    # Service handler
+    # ──────────────────────────────────────────────────────────────────────────
 
-    def handle_parser_service(self, request, response):
+    def _handle_request(self, request, response):
+        """
+        ROS2 service callback.
+
+        Runs the pipeline on the incoming command and
+        returns the result as a JSON string.
+        """
         command = request.command.strip()
 
         if not command:
-            self.get_logger().warning("Service called with an empty command.")
+            self.get_logger().warning("Empty command received.")
             response.response = "[]"
             return response
 
-        self.get_logger().info(f"Received command: '{command}'")
-
+        self.get_logger().info(f"Command: '{command}'")
         t0 = time.perf_counter()
 
-        actions = self.llm_generate_cd(command)
-        self.get_logger().info(f"Ollama returned {len(actions)} raw actions.")
-
-        cd_actions = [
-            map_to_primitive(a, self.verb_map, self.get_logger()) for a in actions
-        ]
+        result = self._pipeline.handle({"command": command})
+        cd_actions = result.get("cd_actions", [])
 
         dt_ms = (time.perf_counter() - t0) * 1000.0
-        self.get_logger().info(
-            f"Response ready: {len(cd_actions)} CD actions in {dt_ms:.1f} ms."
-        )
+        self.get_logger().info(f"{len(cd_actions)} CD actions in {dt_ms:.1f} ms.")
 
         response.response = json.dumps(cd_actions)
         return response
 
 
-def main():
+# ============================================================
+
+
+def main() -> None:
     rclpy.init()
-    node = OllamaNode()
+    node = SemanticParserNode()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
