@@ -164,6 +164,7 @@ class MappingHandler(PipelineHandler):
                 "actor": actor,
                 "content": object_name,
                 "to": destination,
+                "location": location,
             }
         if primitive == "MBUILD":
             return {"primitive": primitive, "actor": actor, "content": object_name}
@@ -316,18 +317,32 @@ class QueryExpansionHandler(PipelineHandler):
 
     def _is_perceptual(self, obj: str) -> bool:
         """
-        True if the object encodes a perceptual question.
+        True si el objeto codifica una pregunta perceptual.
 
-        Two cases:
-          1. Explicit WH-prefix:  "what_is_the_color_of..."
-          2. Perceptual noun:     "the_pose_of_the_person..."
+        Tres casos (en orden de prioridad):
+          1. Prefijo WH al inicio:    "what_is_the_color_of..."
+          2. Prefijo WH en cualquier segmento de la cadena, para manejar
+             residuos de cláusulas previas que no se hayan filtrado en SRL.
+          3. Sustantivo perceptual como primera palabra significativa:
+             "the_pose_of_the_person..."
+
+        FIX: se añadió el caso 2 para tolerar objetos donde el prefijo WH
+        no está al inicio absoluto de la cadena snake_case.
         """
         lower = obj.lower()
 
-        if lower.startswith(self._QUERY_PREFIXES):
+        # Caso 1: prefijo WH al inicio (caso más común tras el fix de SRL)
+        if any(lower.startswith(p) for p in self._QUERY_PREFIXES):
             return True
 
-        # Strip leading articles before checking for perceptual nouns
+        # Caso 2: prefijo WH en cualquier segmento (defensa en profundidad)
+        segments = lower.split("_")
+        for i, _ in enumerate(segments):
+            fragment = "_".join(segments[i:])
+            if any(fragment.startswith(p) for p in self._QUERY_PREFIXES):
+                return True
+
+        # Caso 3: sustantivo perceptual como primera palabra significativa
         stripped = lower.lstrip("the_").lstrip("a_")
         first_word = stripped.split("_")[0] if stripped else ""
         return first_word in self._PERCEPTUAL_NOUNS
@@ -403,7 +418,7 @@ def load_verb_map(logger=None) -> Dict[str, str]:
             with open(path, "r") as f:
                 data = json.load(f)
             if logger:
-                logger.info(f"verb_to_cd loaded from {path} ({len(data)} verbs).")
+                logger.info(f"verb_to_cd loaded from {path} ({len(data)} verbs.")
             return data
         except json.JSONDecodeError as e:
             if logger:
