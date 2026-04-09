@@ -150,6 +150,7 @@ class MappingHandler(PipelineHandler):
                 "object": object_name,
                 "from": source,
                 "to": destination,
+                "location": location,
             }
         if primitive in {"GRASP", "ATTEND", "INGEST"}:
             result = {"primitive": primitive, "actor": actor, "object": object_name}
