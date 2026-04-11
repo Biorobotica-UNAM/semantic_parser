@@ -3,9 +3,10 @@ Concrete pipeline handlers for the semantic parsing pipeline.
 
 Each class handles exactly one step of the transformation:
 
-    SRLHandler            text        → raw action dicts  (spaCy)
-    MappingHandler        verb        → CD primitive       (verb_to_cd.json)
-    QueryExpansionHandler QUERY       → [ATTEND, MTRANS]
+    SRLHandler                  text        → raw action dicts  (spaCy)
+    MappingHandler              verb        → CD primitive       (verb_to_cd.json)
+    QueryExpansionHandler       QUERY       → [ATTEND, MTRANS]
+    AttendNormalizationHandler  ATTEND obj  → canonical form     (e.g. biggest_food)
 
 BioRobotics Laboratory, Facultad de Ingenieria, UNAM
 """
@@ -326,9 +327,6 @@ class QueryExpansionHandler(PipelineHandler):
              residuos de cláusulas previas que no se hayan filtrado en SRL.
           3. Sustantivo perceptual como primera palabra significativa:
              "the_pose_of_the_person..."
-
-        FIX: se añadió el caso 2 para tolerar objetos donde el prefijo WH
-        no está al inicio absoluto de la cadena snake_case.
         """
         lower = obj.lower()
 
@@ -377,6 +375,431 @@ class QueryExpansionHandler(PipelineHandler):
             return after
 
         return "unknown"
+
+
+# ============================================================
+# Handler 4 — ATTEND Object Normalization
+# ============================================================
+
+
+class AttendNormalizationHandler(PipelineHandler):
+    """
+    Pipeline step 4: normalize the 'object' field of ATTEND primitives.
+
+    Responsibility: convert verbose snake_case query strings produced by
+    QueryExpansionHandler into compact, canonical object descriptors that
+    downstream planners can dispatch on directly.
+
+    The normalization resolves four cases in priority order:
+
+      1. Quantifier query  → "count_{noun}"
+            "how_many_cups_on_the_table"            → "count_cups"
+            "how_much_food_in_the_kitchen"          → "count_food"
+
+      2. Superlative query → "{qualifier}_{noun}"
+            "what_is_the_largest_food_on_the_shelf" → "biggest_food"
+            "which_is_the_youngest_person_in_room"  → "youngest_person"
+            "tell_me_the_smallest_object"           → "smallest_object"
+
+      3. Attribute query   → "{attribute}_{noun}"
+            "what_is_the_color_of_the_cup"          → "color_cup"
+            "what_is_the_name_of_the_person"        → "name_person"
+
+      4. Plain identity    → "{noun}"
+            "who_is_in_the_living_room"             → "person"
+            "what_is_on_the_table"                  → unknown (no noun found)
+
+    If no rule matches, the object is returned unchanged so that no
+    information is silently lost (fail-safe).
+
+    The companion MTRANS 'content' field is updated in sync with its
+    preceding ATTEND so that both primitives always carry the same value.
+
+    Reads:  data["cd_actions"]
+    Writes: data["cd_actions"]  (normalized copies, originals not mutated)
+    """
+
+    # ── Quantifier prefixes ───────────────────────────────────────────────────
+    # Maps the snake_case query opener → canonical quantifier token.
+    _QUANTIFIER_PREFIXES: Dict[str, str] = {
+        "how_many_": "count",
+        "how_much_": "count",
+    }
+
+    # ── Superlative adjective → canonical qualifier ───────────────────────────
+    # Covers the most common English superlatives a robot task may encounter.
+    # Extend freely — the lookup is O(1).
+    _SUPERLATIVE_MAP: Dict[str, str] = {
+        # size
+        "largest": "biggest",
+        "biggest": "biggest",
+        "greatest": "biggest",
+        "smallest": "smallest",
+        "tiniest": "smallest",
+        "littlest": "smallest",
+        # height / length
+        "tallest": "tallest",
+        "highest": "tallest",
+        "shortest": "shortest",
+        "lowest": "shortest",
+        # weight
+        "heaviest": "heaviest",
+        "lightest": "lightest",
+        # age
+        "oldest": "oldest",
+        "eldest": "oldest",
+        "youngest": "youngest",
+        # other physical properties
+        "widest": "widest",
+        "narrowest": "narrowest",
+        "thickest": "thickest",
+        "thinnest": "thinnest",
+        "fullest": "fullest",
+        "emptiest": "emptiest",
+    }
+
+    # ── Perceptual-attribute words ────────────────────────────────────────────
+    # When the query asks "what is the COLOR/NAME/... of X", the canonical
+    # object becomes "{attribute}_{noun}", e.g. "color_cup".
+    _ATTRIBUTE_WORDS: frozenset = frozenset(
+        {
+            "color",
+            "colour",
+            "name",
+            "age",
+            "gender",
+            "size",
+            "shape",
+            "weight",
+            "height",
+            "pose",
+            "position",
+            "location",
+            "status",
+            "description",
+        }
+    )
+
+    # ── Noise words stripped before noun extraction ───────────────────────────
+    # Articles, copulas, WH-words, and other filler tokens.
+    _NOISE_WORDS: frozenset = frozenset(
+        {
+            "what",
+            "which",
+            "who",
+            "where",
+            "how",
+            "many",
+            "much",
+            "is",
+            "are",
+            "was",
+            "were",
+            "the",
+            "a",
+            "an",
+            "of",
+            "there",
+            "in",
+            "on",
+            "at",
+            "to",
+            "it",
+            "its",
+        }
+    )
+
+    # ── Spatial prepositions — everything from here on is location, not noun ──
+    _SPATIAL_PREPS: frozenset = frozenset(
+        {
+            "in",
+            "on",
+            "at",
+            "near",
+            "beside",
+            "inside",
+            "next",
+            "above",
+            "below",
+            "behind",
+            "between",
+            "over",
+            "under",
+        }
+    )
+
+    # ── Words that introduce a descriptor phrase after the noun ───────────────
+    # "people wearing yellow jacket" → noun=people, descriptor=yellow_jacket
+    # These are kept as part of the canonical object, not discarded.
+    _DESCRIPTOR_JOINS: frozenset = frozenset(
+        {"wearing", "holding", "carrying", "with", "that", "who"}
+    )
+
+    # ── "who" → canonical noun for person queries ─────────────────────────────
+    _WHO_NOUN = "person"
+
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def handle(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        cd_actions = data.get("cd_actions", [])
+        data["cd_actions"] = self._normalize_all(cd_actions)
+        return self._pass_to_next(data)
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
+
+    def _normalize_all(self, cd_actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Walk the action list and normalize every ATTEND object.
+        Update the immediately-following MTRANS content to match.
+
+        Uses an index-based loop so we can consume the paired MTRANS
+        in the same iteration as its ATTEND, avoiding the stale-iterator
+        bug that occurs when reassigning the list mid-loop.
+        """
+        result = []
+        i = 0
+        while i < len(cd_actions):
+            cd = cd_actions[i]
+
+            if cd.get("primitive") != "ATTEND":
+                result.append(cd)
+                i += 1
+                continue
+
+            raw_obj = cd.get("object", "unknown")
+            normalized = self._normalize_object(raw_obj)
+
+            attend = dict(cd)
+            attend["object"] = normalized
+            result.append(attend)
+            i += 1
+
+            # Consume and update the immediately-following MTRANS in the
+            # same pass, so it is never appended a second time by the
+            # ATTEND branch of the next iteration.
+            if i < len(cd_actions):
+                nxt = cd_actions[i]
+                if nxt.get("primitive") == "MTRANS" and nxt.get("content") == raw_obj:
+                    mtrans = dict(nxt)
+                    mtrans["content"] = normalized
+                    result.append(mtrans)
+                    i += 1  # skip: already emitted
+
+        return result
+
+    # ── Normalization rules ───────────────────────────────────────────────────
+
+    def _normalize_object(self, obj: str) -> str:
+        """
+        Apply normalization rules in priority order.
+
+        Returns a compact canonical string or the original obj as fallback.
+        """
+        tokens = obj.lower().split("_")
+
+        # Rule 1 — Quantifier  ("how many / how much")
+        quantifier = self._detect_quantifier(obj)
+        if quantifier:
+            noun = self._extract_noun_with_descriptors(tokens, skip_superlative=False)
+            if noun:
+                return f"{quantifier}_{noun}"
+
+        # Rule 2 — Superlative  ("largest", "oldest", ...)
+        qualifier, _ = self._detect_superlative(tokens)
+        if qualifier:
+            noun = self._extract_noun_with_descriptors(tokens, skip_superlative=True)
+            if noun:
+                return f"{qualifier}_{noun}"
+
+        # Rule 3 — Perceptual attribute  ("color", "name", "age", ...)
+        attribute = self._detect_attribute(tokens)
+        if attribute:
+            noun = self._extract_noun_after_attribute(tokens, attribute)
+            if noun:
+                return f"{attribute}_{noun}"
+            return attribute  # bare attribute with no explicit target object
+
+        # Rule 4 — Plain identity query  ("who is ...", "what is ...")
+        # "who" queries resolve to the canonical noun "person".
+        if tokens and tokens[0] == "who":
+            return self._WHO_NOUN
+
+        noun = self._extract_noun(tokens, skip_superlative=False)
+        if noun:
+            return noun
+
+        # Rule 5 — Fail-safe: return unchanged
+        return obj
+
+    # ── Quantifier detection ──────────────────────────────────────────────────
+
+    def _detect_quantifier(self, obj: str) -> Optional[str]:
+        """Return the canonical quantifier token if the object is a count query."""
+        for prefix, token in self._QUANTIFIER_PREFIXES.items():
+            if obj.lower().startswith(prefix):
+                return token
+        return None
+
+    # ── Superlative detection ─────────────────────────────────────────────────
+
+    def _detect_superlative(self, tokens: List[str]):
+        """
+        Scan tokens for a superlative adjective.
+
+        Returns (canonical_qualifier, token_index) or (None, -1).
+        """
+        for i, tok in enumerate(tokens):
+            canonical = self._SUPERLATIVE_MAP.get(tok)
+            if canonical:
+                return canonical, i
+        return None, -1
+
+    # ── Attribute detection ───────────────────────────────────────────────────
+
+    def _detect_attribute(self, tokens: List[str]) -> Optional[str]:
+        """
+        Return the first perceptual-attribute word found in the token list.
+
+        Example:
+            ["what", "is", "the", "color", "of", "the", "cup"] → "color"
+        """
+        for tok in tokens:
+            if tok in self._ATTRIBUTE_WORDS:
+                return tok
+        return None
+
+    # ── Noun extraction ───────────────────────────────────────────────────────
+
+    def _extract_noun_with_descriptors(
+        self, tokens: List[str], skip_superlative: bool
+    ) -> Optional[str]:
+        """
+        Extract the main noun plus any descriptor tokens, regardless of
+        whether the descriptor appears before OR after the location phrase.
+
+        The snake_case object string has this structure:
+
+            <wh-prefix> <noun> [<spatial-prep> <location>] [<connector> <descriptor>]
+
+        Examples:
+            "how_many_people_in_the_kitchen_are_wearing_yellow_jacket"
+             → tokens before loc: ["how","many","people"]
+             → tokens after loc:  ["are","wearing","yellow","jacket"]
+             → noun="people", descriptor="yellow_jacket"
+             → "people_yellow_jacket"
+
+            "what_is_the_largest_snack_on_the_shelf"
+             → tokens before loc: ["what","is","the","largest","snack"]
+             → no tokens after loc
+             → noun="snack"
+             → "snack"
+
+        Strategy:
+          Pass 1 — scan tokens up to the first spatial preposition to find
+                   the noun head (and optionally skip the superlative).
+          Pass 2 — scan tokens after the location phrase to collect descriptor
+                   words that follow connector words ("wearing", "holding", …).
+                   Connectors are consumed silently; copulas are discarded.
+        """
+        # ── Split into pre-location and post-location segments ────────────────
+        pre_loc: List[str] = []
+        post_loc: List[str] = []
+        loc_buf: List[str] = []  # location tokens — collected but discarded
+        state = "pre"  # "pre" | "loc" | "post"
+
+        for tok in tokens:
+            if state == "pre":
+                if tok in self._SPATIAL_PREPS:
+                    state = "loc"
+                else:
+                    pre_loc.append(tok)
+            elif state == "loc":
+                # A connector or copula ends the location phrase and opens
+                # the descriptor segment.
+                if tok in self._DESCRIPTOR_JOINS or tok in {"are", "is", "was", "were"}:
+                    state = "post"
+                    # connector itself is not collected
+                else:
+                    loc_buf.append(tok)  # location word — discard later
+            elif state == "post":
+                post_loc.append(tok)
+
+        # ── Pass 1: extract noun head from pre-location tokens ────────────────
+        noun: Optional[str] = None
+        for tok in pre_loc:
+            if tok in self._NOISE_WORDS:
+                continue
+            if skip_superlative and tok in self._SUPERLATIVE_MAP:
+                continue
+            noun = tok
+            break
+
+        if noun is None:
+            return None
+
+        # ── Pass 2: collect descriptor words from post-location tokens ────────
+        descriptor_parts: List[str] = []
+        for tok in post_loc:
+            if tok in self._NOISE_WORDS:
+                continue
+            if tok in self._DESCRIPTOR_JOINS:
+                continue
+            descriptor_parts.append(tok)
+
+        if descriptor_parts:
+            return f"{noun}_{'_'.join(descriptor_parts)}"
+        return noun
+
+    def _extract_noun(self, tokens: List[str], skip_superlative: bool) -> Optional[str]:
+        """
+        Extract only the head noun from a token list (single word).
+
+        Used for attribute and identity queries where a descriptor phrase
+        would not be meaningful (e.g. "color_cup", not "color_cup_red").
+        For quantifier and superlative queries use _extract_noun_with_descriptors.
+
+        Examples:
+            skip_superlative=True,  ["what","is","the","largest","food","on","the","shelf"]
+            → "food"
+
+            skip_superlative=False, ["how","many","cups","on","the","table"]
+            → "cups"
+        """
+        for tok in tokens:
+            if tok in self._SPATIAL_PREPS:
+                break  # location phrase starts here — stop
+            if tok in self._NOISE_WORDS:
+                continue
+            if skip_superlative and tok in self._SUPERLATIVE_MAP:
+                continue
+            return tok  # first content word is the noun head
+
+        return None
+
+    def _extract_noun_after_attribute(
+        self, tokens: List[str], attribute: str
+    ) -> Optional[str]:
+        """
+        Extract the noun that appears after the attribute word.
+
+        Example:
+            tokens = ["what","is","the","color","of","the","cup"]
+            attribute = "color"
+            → "cup"
+        """
+        after_attr = False
+        for tok in tokens:
+            if tok == attribute:
+                after_attr = True
+                continue
+            if not after_attr:
+                continue
+            if tok in self._NOISE_WORDS:
+                continue
+            if tok in self._SPATIAL_PREPS:
+                break
+            return tok
+        return None
 
 
 # ============================================================
