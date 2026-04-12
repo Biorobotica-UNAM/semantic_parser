@@ -392,25 +392,23 @@ class AttendNormalizationHandler(PipelineHandler):
 
     The normalization resolves four cases in priority order:
 
-      1. Quantifier query  → "count_{noun}"
-            "how_many_cups_on_the_table"            → "count_cups"
-            "how_much_food_in_the_kitchen"          → "count_food"
+      1. Quantifier query  → "count_{noun}[_{descriptor}]"
+            "how_many_cups_on_the_table"                        → "count_cups"
+            "how_many_people_in_kitchen_wearing_yellow_jacket"  → "count_people_yellow_jacket"
+            "how_many_persons_raising_right_arm_in_bedroom"     → "count_persons_right_arm"
 
       2. Superlative query → "{qualifier}_{noun}"
-            "what_is_the_largest_food_on_the_shelf" → "biggest_food"
-            "which_is_the_youngest_person_in_room"  → "youngest_person"
-            "tell_me_the_smallest_object"           → "smallest_object"
+            "what_is_the_largest_food_on_the_shelf"             → "biggest_food"
+            "which_is_the_youngest_person_in_room"              → "youngest_person"
 
       3. Attribute query   → "{attribute}_{noun}"
-            "what_is_the_color_of_the_cup"          → "color_cup"
-            "what_is_the_name_of_the_person"        → "name_person"
+            "what_is_the_color_of_the_cup"                      → "color_cup"
+            "what_is_the_name_of_the_person"                    → "name_person"
 
       4. Plain identity    → "{noun}"
-            "who_is_in_the_living_room"             → "person"
-            "what_is_on_the_table"                  → unknown (no noun found)
+            "who_is_in_the_living_room"                         → "person"
 
-    If no rule matches, the object is returned unchanged so that no
-    information is silently lost (fail-safe).
+    If no rule matches, the object is returned unchanged (fail-safe).
 
     The companion MTRANS 'content' field is updated in sync with its
     preceding ATTEND so that both primitives always carry the same value.
@@ -420,15 +418,12 @@ class AttendNormalizationHandler(PipelineHandler):
     """
 
     # ── Quantifier prefixes ───────────────────────────────────────────────────
-    # Maps the snake_case query opener → canonical quantifier token.
     _QUANTIFIER_PREFIXES: Dict[str, str] = {
         "how_many_": "count",
         "how_much_": "count",
     }
 
     # ── Superlative adjective → canonical qualifier ───────────────────────────
-    # Covers the most common English superlatives a robot task may encounter.
-    # Extend freely — the lookup is O(1).
     _SUPERLATIVE_MAP: Dict[str, str] = {
         # size
         "largest": "biggest",
@@ -459,8 +454,6 @@ class AttendNormalizationHandler(PipelineHandler):
     }
 
     # ── Perceptual-attribute words ────────────────────────────────────────────
-    # When the query asks "what is the COLOR/NAME/... of X", the canonical
-    # object becomes "{attribute}_{noun}", e.g. "color_cup".
     _ATTRIBUTE_WORDS: frozenset = frozenset(
         {
             "color",
@@ -480,8 +473,9 @@ class AttendNormalizationHandler(PipelineHandler):
         }
     )
 
-    # ── Noise words stripped before noun extraction ───────────────────────────
-    # Articles, copulas, WH-words, and other filler tokens.
+    # ── Noise words — always discarded, never part of noun or descriptor ──────
+    # Note: spatial preps (in, on, at…) are intentionally NOT in this set so
+    # the state machine in _extract_noun_with_descriptors can detect them first.
     _NOISE_WORDS: frozenset = frozenset(
         {
             "what",
@@ -492,24 +486,19 @@ class AttendNormalizationHandler(PipelineHandler):
             "many",
             "much",
             "is",
-            "are",
             "was",
-            "were",
             "the",
             "a",
             "an",
             "of",
             "there",
-            "in",
-            "on",
-            "at",
             "to",
             "it",
             "its",
         }
     )
 
-    # ── Spatial prepositions — everything from here on is location, not noun ──
+    # ── Spatial prepositions — trigger transition to location state ───────────
     _SPATIAL_PREPS: frozenset = frozenset(
         {
             "in",
@@ -528,14 +517,42 @@ class AttendNormalizationHandler(PipelineHandler):
         }
     )
 
-    # ── Words that introduce a descriptor phrase after the noun ───────────────
-    # "people wearing yellow jacket" → noun=people, descriptor=yellow_jacket
-    # These are kept as part of the canonical object, not discarded.
+    # ── Connector/participial words — consumed silently after noun head ───────
     _DESCRIPTOR_JOINS: frozenset = frozenset(
-        {"wearing", "holding", "carrying", "with", "that", "who"}
+        {
+            "wearing",
+            "holding",
+            "carrying",
+            "with",
+            "that",
+            "who",
+            "raising",
+            "sitting",
+            "standing",
+            "lying",
+            "pointing",
+            "waving",
+            "looking",
+            "facing",
+        }
     )
 
-    # ── "who" → canonical noun for person queries ─────────────────────────────
+    # ── Copulas and possessives — discarded wherever they appear ─────────────
+    # Includes common typos: "ar" → are, "thir" → their.
+    _COPULAS: frozenset = frozenset(
+        {
+            "are",
+            "were",
+            "ar",  # typo: are
+            "their",
+            "thir",  # possessive + typo
+            "its",
+            "his",
+            "her",
+        }
+    )
+
+    # ── "who" queries resolve to this canonical noun ──────────────────────────
     _WHO_NOUN = "person"
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -575,8 +592,7 @@ class AttendNormalizationHandler(PipelineHandler):
             i += 1
 
             # Consume and update the immediately-following MTRANS in the
-            # same pass, so it is never appended a second time by the
-            # ATTEND branch of the next iteration.
+            # same pass, so it is never appended a second time.
             if i < len(cd_actions):
                 nxt = cd_actions[i]
                 if nxt.get("primitive") == "MTRANS" and nxt.get("content") == raw_obj:
@@ -617,10 +633,9 @@ class AttendNormalizationHandler(PipelineHandler):
             noun = self._extract_noun_after_attribute(tokens, attribute)
             if noun:
                 return f"{attribute}_{noun}"
-            return attribute  # bare attribute with no explicit target object
+            return attribute
 
-        # Rule 4 — Plain identity query  ("who is ...", "what is ...")
-        # "who" queries resolve to the canonical noun "person".
+        # Rule 4 — Plain identity query ("who is ...", "what is ...")
         if tokens and tokens[0] == "who":
             return self._WHO_NOUN
 
@@ -631,7 +646,7 @@ class AttendNormalizationHandler(PipelineHandler):
         # Rule 5 — Fail-safe: return unchanged
         return obj
 
-    # ── Quantifier detection ──────────────────────────────────────────────────
+    # ── Detectors ─────────────────────────────────────────────────────────────
 
     def _detect_quantifier(self, obj: str) -> Optional[str]:
         """Return the canonical quantifier token if the object is a count query."""
@@ -640,29 +655,16 @@ class AttendNormalizationHandler(PipelineHandler):
                 return token
         return None
 
-    # ── Superlative detection ─────────────────────────────────────────────────
-
     def _detect_superlative(self, tokens: List[str]):
-        """
-        Scan tokens for a superlative adjective.
-
-        Returns (canonical_qualifier, token_index) or (None, -1).
-        """
+        """Scan tokens for a superlative. Returns (canonical, index) or (None, -1)."""
         for i, tok in enumerate(tokens):
             canonical = self._SUPERLATIVE_MAP.get(tok)
             if canonical:
                 return canonical, i
         return None, -1
 
-    # ── Attribute detection ───────────────────────────────────────────────────
-
     def _detect_attribute(self, tokens: List[str]) -> Optional[str]:
-        """
-        Return the first perceptual-attribute word found in the token list.
-
-        Example:
-            ["what", "is", "the", "color", "of", "the", "cup"] → "color"
-        """
+        """Return the first perceptual-attribute word found in the token list."""
         for tok in tokens:
             if tok in self._ATTRIBUTE_WORDS:
                 return tok
@@ -674,38 +676,32 @@ class AttendNormalizationHandler(PipelineHandler):
         self, tokens: List[str], skip_superlative: bool
     ) -> Optional[str]:
         """
-        Extract the main noun plus any descriptor tokens, regardless of
-        whether the descriptor appears before OR after the location phrase.
+        Extract the noun head plus any descriptor tokens.
 
-        The snake_case object string has this structure:
+        Handles descriptors that appear either BEFORE or AFTER the location:
 
-            <wh-prefix> <noun> [<spatial-prep> <location>] [<connector> <descriptor>]
+          Before:  "how_many_persons_raising_right_arm_in_bedroom"
+                    pre_loc=[how,many,persons,raising,right,arm]  loc_buf=[bedroom]
+                    → noun=persons  pre_desc=[right,arm]  → "persons_right_arm"
 
-        Examples:
-            "how_many_people_in_the_kitchen_are_wearing_yellow_jacket"
-             → tokens before loc: ["how","many","people"]
-             → tokens after loc:  ["are","wearing","yellow","jacket"]
-             → noun="people", descriptor="yellow_jacket"
-             → "people_yellow_jacket"
+          After:   "how_many_people_in_kitchen_wearing_yellow_jacket"
+                    pre_loc=[how,many,people]  loc_buf=[kitchen]  post_loc=[yellow,jacket]
+                    → noun=people  post_desc=[yellow,jacket]  → "people_yellow_jacket"
 
-            "what_is_the_largest_snack_on_the_shelf"
-             → tokens before loc: ["what","is","the","largest","snack"]
-             → no tokens after loc
-             → noun="snack"
-             → "snack"
+          None:    "how_many_cups_on_the_table"
+                    pre_loc=[how,many,cups]  loc_buf=[the,table]
+                    → noun=cups  → "cups"
 
-        Strategy:
-          Pass 1 — scan tokens up to the first spatial preposition to find
-                   the noun head (and optionally skip the superlative).
-          Pass 2 — scan tokens after the location phrase to collect descriptor
-                   words that follow connector words ("wearing", "holding", …).
-                   Connectors are consumed silently; copulas are discarded.
+        State machine for splitting:
+          "pre"  — tokens before the first spatial preposition
+          "loc"  — tokens inside the location phrase (discarded)
+          "post" — tokens after a connector/copula that follows the location
         """
-        # ── Split into pre-location and post-location segments ────────────────
+        # ── Phase 1: split tokens into three segments ─────────────────────────
         pre_loc: List[str] = []
+        loc_buf: List[str] = []  # discarded
         post_loc: List[str] = []
-        loc_buf: List[str] = []  # location tokens — collected but discarded
-        state = "pre"  # "pre" | "loc" | "post"
+        state = "pre"
 
         for tok in tokens:
             if state == "pre":
@@ -714,66 +710,77 @@ class AttendNormalizationHandler(PipelineHandler):
                 else:
                     pre_loc.append(tok)
             elif state == "loc":
-                # A connector or copula ends the location phrase and opens
-                # the descriptor segment.
-                if tok in self._DESCRIPTOR_JOINS or tok in {"are", "is", "was", "were"}:
+                # A connector/copula closes the location phrase.
+                if tok in self._DESCRIPTOR_JOINS or tok in self._COPULAS:
                     state = "post"
                     # connector itself is not collected
                 else:
-                    loc_buf.append(tok)  # location word — discard later
-            elif state == "post":
+                    loc_buf.append(tok)
+            else:  # "post"
                 post_loc.append(tok)
 
-        # ── Pass 1: extract noun head from pre-location tokens ────────────────
+        # ── Phase 2: extract noun + pre-location descriptors from pre_loc ──────
+        # pre_loc structure: [noise...] [superlative?] noun [connector?] [descriptor...]
         noun: Optional[str] = None
+        pre_desc: List[str] = []
+        after_noun = False
+
         for tok in pre_loc:
-            if tok in self._NOISE_WORDS:
-                continue
-            if skip_superlative and tok in self._SUPERLATIVE_MAP:
-                continue
-            noun = tok
-            break
+            if not after_noun:
+                if tok in self._NOISE_WORDS:
+                    continue
+                if tok in self._COPULAS:
+                    continue
+                if skip_superlative and tok in self._SUPERLATIVE_MAP:
+                    continue
+                noun = tok
+                after_noun = True
+            else:
+                if tok in self._DESCRIPTOR_JOINS:
+                    continue
+                if tok in self._COPULAS:
+                    continue
+                if tok in self._NOISE_WORDS:
+                    continue
+                pre_desc.append(tok)
 
         if noun is None:
             return None
 
-        # ── Pass 2: collect descriptor words from post-location tokens ────────
-        descriptor_parts: List[str] = []
+        # ── Phase 3: collect post-location descriptors from post_loc ──────────
+        post_desc: List[str] = []
         for tok in post_loc:
             if tok in self._NOISE_WORDS:
                 continue
+            if tok in self._COPULAS:
+                continue
             if tok in self._DESCRIPTOR_JOINS:
                 continue
-            descriptor_parts.append(tok)
+            post_desc.append(tok)
 
-        if descriptor_parts:
-            return f"{noun}_{'_'.join(descriptor_parts)}"
+        all_desc = pre_desc + post_desc
+        if all_desc:
+            return f"{noun}_{'_'.join(all_desc)}"
         return noun
 
     def _extract_noun(self, tokens: List[str], skip_superlative: bool) -> Optional[str]:
         """
-        Extract only the head noun from a token list (single word).
+        Extract only the head noun (single word).
 
-        Used for attribute and identity queries where a descriptor phrase
-        would not be meaningful (e.g. "color_cup", not "color_cup_red").
-        For quantifier and superlative queries use _extract_noun_with_descriptors.
-
-        Examples:
-            skip_superlative=True,  ["what","is","the","largest","food","on","the","shelf"]
-            → "food"
-
-            skip_superlative=False, ["how","many","cups","on","the","table"]
-            → "cups"
+        Used for attribute and identity queries where descriptors would not
+        be meaningful. For quantifier/superlative queries use
+        _extract_noun_with_descriptors instead.
         """
         for tok in tokens:
             if tok in self._SPATIAL_PREPS:
-                break  # location phrase starts here — stop
+                break
             if tok in self._NOISE_WORDS:
+                continue
+            if tok in self._COPULAS:
                 continue
             if skip_superlative and tok in self._SUPERLATIVE_MAP:
                 continue
-            return tok  # first content word is the noun head
-
+            return tok
         return None
 
     def _extract_noun_after_attribute(
@@ -783,8 +790,7 @@ class AttendNormalizationHandler(PipelineHandler):
         Extract the noun that appears after the attribute word.
 
         Example:
-            tokens = ["what","is","the","color","of","the","cup"]
-            attribute = "color"
+            tokens=["what","is","the","color","of","the","cup"], attribute="color"
             → "cup"
         """
         after_attr = False
