@@ -8,7 +8,7 @@ The node itself knows nothing about NLP, verb mappings, or query
 expansion — those are handled by the pipeline handlers.
 
 Pipeline:
-    SRLHandler → MappingHandler → QueryExpansionHandler
+    SRLHandler → MappingHandler → QueryExpansionHandler → AttendNormalizationHandler
 
 BioRobotics Laboratory, Facultad de Ingenieria, UNAM
 """
@@ -25,6 +25,7 @@ from semantic_parser.handlers import (
     SRLHandler,
     MappingHandler,
     QueryExpansionHandler,
+    AttendNormalizationHandler,
     load_verb_map,
 )
 
@@ -78,9 +79,9 @@ class SemanticParserNode(Node):
 
         first_handler = SRLHandler(srl)
         (
-            first_handler.set_next(MappingHandler(verb_map)).set_next(
-                QueryExpansionHandler()
-            )
+            first_handler.set_next(MappingHandler(verb_map))
+            .set_next(QueryExpansionHandler())
+            .set_next(AttendNormalizationHandler())
         )
 
         return first_handler
