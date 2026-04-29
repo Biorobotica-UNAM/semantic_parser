@@ -27,6 +27,7 @@ setup(
     entry_points={
         "console_scripts": [
             "semantic_node = semantic_parser.semantic_node:main",
+            "entity_extractor_node = semantic_parser.entity_extractor_node:main",
         ],
     },
 )
