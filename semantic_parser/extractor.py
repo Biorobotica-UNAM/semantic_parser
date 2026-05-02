@@ -229,7 +229,7 @@ class SentenceEntityExtractor:
         print(result.drink)  # None
     """
 
-    def __init__(self, model: str = "en_core_web_sm") -> None:
+    def __init__(self, model: str = "en_core_web_trf") -> None:
         self._nlp: Language = NlpPipelineFactory.create(model)
         self._chain: EntityHandler = ExtractionChainBuilder.build()
 

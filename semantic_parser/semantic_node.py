@@ -1,4 +1,6 @@
 """
+semantic_node.py
+
 ROS2 service node for natural language semantic parsing.
 
 Responsibility: expose the 'semantic_parser' ROS2 service and
@@ -7,10 +9,15 @@ delegate all processing to the internal pipeline.
 The node itself knows nothing about NLP, verb mappings, or query
 expansion — those are handled by the pipeline handlers.
 
-Pipeline:
-    SRLHandler → MappingHandler → QueryExpansionHandler → AttendNormalizationHandler
+Pipeline (v2)
+─────────────
+    SRLHandler
+        → MappingHandler
+            → QueryExpansionHandler
+                → AttendNormalizationHandler
+                    → SerializationHandler
 
-BioRobotics Laboratory, Facultad de Ingenieria, UNAM
+BioRobotics Laboratory, Facultad de Ingeniería, UNAM
 """
 
 import json
@@ -20,12 +27,14 @@ import rclpy
 from rclpy.node import Node
 from semantic_parser_interfaces.srv import Parser
 
-from semantic_parser.spacy_srl import SpacySRL
-from semantic_parser.handlers import (
+from semantic_parser.nlp.spacy_pipeline import SpacyPipelineFactory
+from semantic_parser.nlp.spacy_srl import SpacySRL
+from semantic_parser.pipeline.handlers import (
     SRLHandler,
     MappingHandler,
     QueryExpansionHandler,
     AttendNormalizationHandler,
+    SerializationHandler,
     load_verb_map,
 )
 
@@ -46,15 +55,12 @@ class SemanticParserNode(Node):
 
     def __init__(self) -> None:
         super().__init__("semantic_parser_node")
-
         self._pipeline = self._build_pipeline()
-
         self._service = self.create_service(
             Parser,
             "semantic_parser",
             self._handle_request,
         )
-
         self.get_logger().info("Semantic parser service ready.")
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -65,26 +71,27 @@ class SemanticParserNode(Node):
         """
         Assemble the parsing pipeline.
 
-        Returns the first handler in the chain. Calling handle()
-        on it automatically runs all subsequent steps.
+        Returns the first handler in the chain. Calling handle() on it
+        automatically runs all subsequent steps.
 
-        To add a new step, create a new handler class in handlers.py
+        To add a new step: create a new handler in pipeline/handlers.py
         and chain it here — no other code needs to change.
         """
         self.get_logger().info(f"Loading spaCy model ({self._SPACY_MODEL})...")
-        srl = SpacySRL(model=self._SPACY_MODEL)
-        self.get_logger().info("spaCy model ready.")
+        nlp = SpacyPipelineFactory.build(self._SPACY_MODEL)
+        self.get_logger().info("spaCy pipeline ready (EntityRuler + PersonDescTagger).")
 
+        srl = SpacySRL(nlp)
         verb_map = load_verb_map(self.get_logger())
 
-        first_handler = SRLHandler(srl)
+        first = SRLHandler(srl)
         (
-            first_handler.set_next(MappingHandler(verb_map))
+            first.set_next(MappingHandler(verb_map))
             .set_next(QueryExpansionHandler())
             .set_next(AttendNormalizationHandler())
+            .set_next(SerializationHandler())
         )
-
-        return first_handler
+        return first
 
     # ──────────────────────────────────────────────────────────────────────────
     # Service handler
@@ -117,7 +124,7 @@ class SemanticParserNode(Node):
         return response
 
 
-# ============================================================
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def main() -> None:
