@@ -126,16 +126,28 @@ class ATRANSPrimitive(CDPrimitive):
     Subtypes
     ────────
     bring      — carry to destination (implicit source = current loc)
-    place      — put down at destination
+    place      — put down at destination (a surface, not a person)
     give       — hand over to a person
+
+    recipient_person — structured descriptor of the person receiving the
+    object, when the destination is a person rather than a location.
+    e.g. "bring it to the person pointing to the right"
+         → destination="user", recipient_person=PersonDescriptor(gesture="pointing", side="right")
     """
 
     primitive: str = "ATRANS"
-    subtype: str = "bring"  # bring | place | give
+    subtype: str = "bring"
     object: str = "unknown"
-    object_category: Optional[str] = None  # fruit, drink, toy, …
+    object_category: Optional[str] = None
     source: str = "unknown"
     destination: str = "unknown"
+    recipient_person: Optional[PersonDescriptor] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = super().to_dict()
+        if self.recipient_person:
+            d["recipient_person"] = self.recipient_person.to_dict()
+        return d
 
 
 # ──────────────────────────────────────────────────────────────
@@ -277,12 +289,21 @@ class MTRANSPrimitive(CDPrimitive):
     Mental transfer: robot reports a perceived result to a person.
 
     Always paired with a preceding ATTEND in the expanded plan.
+    recipient_person — structured descriptor when the recipient is
+    identified by pose/gesture/clothing rather than by name or "user".
     """
 
     primitive: str = "MTRANS"
     content: str = "unknown"
     recipient: str = "user"
+    recipient_person: Optional[PersonDescriptor] = None
     location: str = "unknown"
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = super().to_dict()
+        if self.recipient_person:
+            d["recipient_person"] = self.recipient_person.to_dict()
+        return d
 
 
 # ──────────────────────────────────────────────────────────────
@@ -301,13 +322,24 @@ class SPEAKPrimitive(CDPrimitive):
     time_info     — say time / date / day
     self_info     — say something about yourself
     answer_quiz   — answer a question / quiz
+
+    recipient_person — structured descriptor when the recipient is
+    identified by pose/gesture/clothing rather than by name or "user".
+    e.g. "say X to the person pointing to the left"
     """
 
     primitive: str = "SPEAK"
-    subtype: str = "affiliation"  # affiliation | time_info | self_info | answer_quiz
+    subtype: str = "affiliation"
     content: str = "unknown"
     recipient: str = "user"
+    recipient_person: Optional[PersonDescriptor] = None
     location: str = "unknown"
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = super().to_dict()
+        if self.recipient_person:
+            d["recipient_person"] = self.recipient_person.to_dict()
+        return d
 
 
 # ──────────────────────────────────────────────────────────────

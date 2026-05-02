@@ -476,8 +476,6 @@ class MappingHandler(PipelineHandler):
     def _build_atrans(
         self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None
     ):
-        # For placement verbs (place/put/set/drop) the target surface comes
-        # through as `location` ("put it ON THE SOFA") rather than destination.
         _PLACEMENT = {"place", "put", "set", "drop", "deposit", "pour", "leave"}
         if subtype in _PLACEMENT and dest == "unknown" and loc != "unknown":
             dest = loc
@@ -488,7 +486,8 @@ class MappingHandler(PipelineHandler):
             object=obj,
             object_category=obj_cat,
             source=source,
-            destination=dest,
+            destination="user" if rp else dest,
+            recipient_person=rp if rp else None,
         )
 
     def _build_grasp(
@@ -546,30 +545,49 @@ class MappingHandler(PipelineHandler):
     def _build_speak(
         self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None
     ):
-        # Bug 064 fix: when destination is the "person_recipient" sentinel,
-        # the actual recipient descriptor is in `person` (set by SRL's
-        # _find_of_recipient).  Use it to build the recipient string.
+        # Recipient resolution priority:
+        # 1. "of the person..." sentinel → person descriptor from SRL
+        # 2. rp — PersonDescriptor extracted from "to the person..." destination
+        # 3. plain dest string (named person or "user")
         if dest == "person_recipient":
-            recipient = self._serialize_recipient("user", person)
+            # person has pose/gesture/clothing set by SRL's _find_of_recipient
+            has_descriptor = any(
+                [
+                    person.pose,
+                    person.gesture,
+                    person.clothing_item,
+                    person.clothing_color,
+                    person.name,
+                ]
+            )
+            recipient_person = person if has_descriptor else None
+            recipient = "user"
+        elif rp:
+            recipient_person = rp
+            recipient = "user"
         else:
-            recipient = self._serialize_recipient(dest, rp)
+            recipient_person = None
+            recipient = dest if dest not in ("unknown", "") else "user"
         return SPEAKPrimitive(
             actor=actor,
             subtype=subtype,
             content=obj,
             location=loc,
             recipient=recipient,
+            recipient_person=recipient_person,
         )
 
     def _build_mtrans(
         self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None
     ):
-        recipient = self._serialize_recipient(dest, rp)
+        recipient_person = rp if rp else None
+        recipient = "user" if rp else (dest if dest not in ("unknown", "") else "user")
         return MTRANSPrimitive(
             actor=actor,
             content=obj,
             location="unknown",
             recipient=recipient,
+            recipient_person=recipient_person,
         )
 
     def _build_social(
@@ -590,43 +608,6 @@ class MappingHandler(PipelineHandler):
         return WAITPrimitive(actor=actor, condition=obj)
 
     # ── Utilities ─────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _serialize_recipient(dest: str, rp: Optional[PersonDescriptor]) -> str:
-        """
-        Build a recipient string for SPEAK/MTRANS.
-
-        If a PersonDescriptor was extracted from the destination, encode
-        it as a compact descriptor string so CLIPS can distinguish between
-        "tell user" vs "tell person_pointing_right" vs "tell person_blue_shirt".
-
-        Examples
-        ────────
-        rp=None, dest="user"                         → "user"
-        rp=PersonDescriptor(gesture="pointing",
-                            side="right")             → "person_pointing_right"
-        rp=PersonDescriptor(name="Robin")             → "Robin"
-        rp=PersonDescriptor(clothing_color="blue",
-                            clothing_item="shirt")    → "person_blue_shirt"
-        """
-        if rp is None:
-            return dest if dest != "unknown" else "user"
-        if rp.name:
-            return rp.name
-        parts = ["person"]
-        if rp.pose:
-            parts.append(rp.pose)
-        if rp.gesture:
-            parts.append(rp.gesture)
-        if rp.side:
-            parts.append(rp.side)
-        if rp.body_part:
-            parts.append(rp.body_part)
-        if rp.clothing_color:
-            parts.append(rp.clothing_color)
-        if rp.clothing_item:
-            parts.append(rp.clothing_item)
-        return "_".join(parts)
 
     @staticmethod
     def _person_from_string(text: str) -> PersonDescriptor:
