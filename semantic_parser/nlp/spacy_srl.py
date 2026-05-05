@@ -213,15 +213,13 @@ class SpacySRL:
         obj_category: Optional[str] = None
         destination: Optional[str] = None
         location: Optional[str] = None
+        destination_location: Optional[str] = None
         person_desc = PersonDescriptor()
 
         if is_query:
             action_str = "query"
             obj = self._extract_query_content(root, token_set)
             destination = self._find_recipient_text(root, token_set)
-            # The location lives inside the subordinate clause (ccomp),
-            # not as a direct prep child of "tell/say".  Try direct
-            # first, then fall back to searching the full subtree.
             location = self._find_prep_arg(
                 root, token_set, self._LOC_PREPS
             ) or self._find_location_in_subtree(root, token_set)
@@ -242,21 +240,19 @@ class SpacySRL:
             # ── Destination ───────────────────────────────────
             dest_token = self._find_destination_token(root, token_set)
             location = self._find_prep_arg(root, token_set, self._LOC_PREPS)
+            destination_location = None  # location embedded in the destination NP
 
             if dest_token:
                 destination = self._noun_phrase_base(dest_token, token_set)
                 np_loc = self._extract_location_from_np(dest_token, token_set)
                 if np_loc:
+                    destination_location = np_loc
                     location = np_loc
 
             destination = self._resolve_recipient_for_transfer(
                 root, lemma, destination, token_set
             )
 
-            # ── Answer-verb: extract "of the person..." as recipient ──
-            # "Answer the question OF the person pointing to the right in the kitchen"
-            # The person is under prep "of", not "to".  Extract them here so
-            # MappingHandler receives a structured person and a clean obj.
             if lemma in self._ANSWER_VERBS and destination in (None, "unknown"):
                 of_person, of_location = self._find_of_recipient(root, token_set, doc)
                 if of_person:
@@ -279,6 +275,7 @@ class SpacySRL:
             "object_category": obj_category,
             "source": source or "unknown",
             "destination": destination or "unknown",
+            "destination_location": destination_location,  # where recipient is located
             "location": location or "unknown",
             "actor": "robot",
             "person": person_desc.to_dict(),

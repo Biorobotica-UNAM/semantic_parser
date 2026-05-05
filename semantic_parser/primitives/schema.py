@@ -142,6 +142,7 @@ class ATRANSPrimitive(CDPrimitive):
     source: str = "unknown"
     destination: str = "unknown"
     recipient_person: Optional[PersonDescriptor] = None
+    recipient_location: Optional[str] = None  # where the recipient person is
 
     def to_dict(self) -> Dict[str, Any]:
         d = super().to_dict()
@@ -297,6 +298,7 @@ class MTRANSPrimitive(CDPrimitive):
     content: str = "unknown"
     recipient: str = "user"
     recipient_person: Optional[PersonDescriptor] = None
+    recipient_location: Optional[str] = None  # where the recipient person is
     location: str = "unknown"
 
     def to_dict(self) -> Dict[str, Any]:
@@ -333,6 +335,7 @@ class SPEAKPrimitive(CDPrimitive):
     content: str = "unknown"
     recipient: str = "user"
     recipient_person: Optional[PersonDescriptor] = None
+    recipient_location: Optional[str] = None  # where the recipient person is
     location: str = "unknown"
 
     def to_dict(self) -> Dict[str, Any]:

@@ -192,26 +192,18 @@ class MappingHandler(PipelineHandler):
         source = action.get("source", "unknown")
         destination = self._normalize_destination(action.get("destination", "unknown"))
         location = action.get("location", "unknown")
+        destination_location = action.get("destination_location")  # from SRL
         actor = action.get("actor", "robot")
         person_dict = action.get("person", {})
 
         person = self._build_person_descriptor(person_dict)
 
-        # Resolve destination: raw strings like "to the person raising their right arm
-        # in the office" are split into destination="user", location, and a
-        # PersonDescriptor for the recipient.
-        destination, location, recipient_person = self._resolve_person_destination(
-            destination, location, person
+        destination, recipient_person, recipient_location = (
+            self._resolve_person_destination(destination, person)
         )
 
-        # If _resolve_person_destination extracted a new person from the destination,
-        # use it as recipient_person but keep the original `person` (subject descriptor)
-        # unchanged so ACCOMPANY/ATTEND still get the correct person.
-        if recipient_person is not person:
-            # recipient_person came from the destination string
-            pass
-        else:
-            recipient_person = None  # no person-recipient was extracted
+        if recipient_location is None and destination_location:
+            recipient_location = destination_location
 
         prim_type, subtype = self._resolve_type_and_subtype(
             verb, destination, obj, person
@@ -228,6 +220,7 @@ class MappingHandler(PipelineHandler):
             location,
             person,
             recipient_person,
+            recipient_location,
         )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -246,17 +239,20 @@ class MappingHandler(PipelineHandler):
     def _resolve_person_destination(
         self,
         destination: str,
-        location: str,
         person: "PersonDescriptor",
     ) -> tuple:
         """
-        Detect destinations that describe a person rather than a place,
-        e.g. "to the person raising their right arm in the office".
+        Detect destinations that describe a person rather than a place.
 
-        When detected:
-          • destination → PersonDescriptor (recipient)
-          • embedded location ("in the office") → location field
-          • Returns ("user", new_location, person_descriptor)
+        e.g. "to the person raising their right arm in the office"
+
+        Returns
+        ───────
+        (destination, recipient_person, recipient_location)
+
+        • destination        — "user" if a person was found, else original string
+        • recipient_person   — PersonDescriptor of the recipient, or None
+        • recipient_location — where the recipient is ("the office"), or None
         """
         from semantic_parser.domain.entities import (
             PERSON_NAMES,
@@ -269,55 +265,61 @@ class MappingHandler(PipelineHandler):
 
         dest_lower = destination.lower().strip()
 
-        # Already resolved or is a plain location — nothing to do
-        if dest_lower in ("unknown", "user", ""):
-            return destination, location, person
+        if dest_lower in ("unknown", "user", "person_recipient", ""):
+            return destination, None, None
 
         tokens = dest_lower.replace("to ", "", 1).split()
 
-        # Check for named person in destination
+        # Named person: "to Robin in the kitchen"
         for name in PERSON_NAMES:
             if name.lower() in tokens:
-                # Extract trailing location ("to Robin in the kitchen")
-                new_loc = self._extract_loc_from_tokens(tokens, location)
-                return "user", new_loc, PersonDescriptor(name=name)
+                loc = self._extract_loc_from_tokens(tokens, None)
+                return "user", PersonDescriptor(name=name), loc
 
-        # Check for pose/gesture descriptor
-        for tok in tokens:
-            if tok in PERSON_POSES:
-                new_loc = self._extract_loc_from_tokens(tokens, location)
-                # Determine if it's a gesture or a pose
-                if tok in ("raising", "pointing"):
-                    side = next((t for t in tokens if t in BODY_SIDES), None)
-                    part = next((t for t in tokens if t in BODY_PARTS), None)
-                    return (
-                        "user",
-                        new_loc,
-                        PersonDescriptor(gesture=tok, side=side, body_part=part),
-                    )
-                return "user", new_loc, PersonDescriptor(pose=tok)
+        # Gesture: "to the person raising/pointing their [side] [body_part] in X"
+        gesture_verbs = {"raising", "pointing"}
+        gesture = next((t for t in tokens if t in gesture_verbs), None)
+        if gesture:
+            side = next((t for t in tokens if t in BODY_SIDES), None)
+            part = next((t for t in tokens if t in BODY_PARTS), None)
+            loc = self._extract_loc_from_tokens(tokens, None)
+            return (
+                "user",
+                PersonDescriptor(gesture=gesture, side=side, body_part=part),
+                loc,
+            )
 
-        # Check for clothing descriptor
+        # Pose: "to the sitting/standing/lying/waving person in X"
+        pose = next((t for t in tokens if t in PERSON_POSES), None)
+        if pose:
+            loc = self._extract_loc_from_tokens(tokens, None)
+            return "user", PersonDescriptor(pose=pose), loc
+
+        # Clothing: "to the person wearing a blue shirt in X"
         color = next((t for t in tokens if t in CLOTHING_COLORS), None)
         garment = next((t for t in tokens if t in CLOTHING_ITEMS), None)
         if color or garment:
-            new_loc = self._extract_loc_from_tokens(tokens, location)
+            loc = self._extract_loc_from_tokens(tokens, None)
             return (
                 "user",
-                new_loc,
                 PersonDescriptor(clothing_color=color, clothing_item=garment),
+                loc,
             )
 
-        return destination, location, person
+        return destination, None, None
 
     @staticmethod
-    def _extract_loc_from_tokens(tokens: list, fallback: str) -> str:
-        """Extract 'the X' after 'in/at/on' in a token list."""
+    def _extract_loc_from_tokens(tokens: list, fallback) -> Optional[str]:
+        """Extract location after 'in/at/on/near' in a token list."""
         _LOC_PREPS = {"in", "at", "on", "near"}
         for i, tok in enumerate(tokens):
             if tok in _LOC_PREPS and i + 1 < len(tokens):
-                # Collect the rest as the location phrase
-                return "the " + " ".join(tokens[i + 1 :])
+                rest = tokens[i + 1 :]
+                # Don't prepend 'the' if it's already the first word
+                phrase = " ".join(rest)
+                if not phrase.startswith("the "):
+                    phrase = "the " + phrase
+                return phrase
         return fallback
 
     def _normalize_destination(self, destination: str) -> str:
@@ -348,7 +350,6 @@ class MappingHandler(PipelineHandler):
 
         prim_type, subtype = type_sub
 
-        # Bug A fix: "take/move + person" → ACCOMPANY
         _TAKE_VERBS = {"take", "move"}
         if prim_type == "ATRANS" and verb in _TAKE_VERBS:
             if not person.is_generic or self._obj_is_person(obj):
@@ -433,6 +434,7 @@ class MappingHandler(PipelineHandler):
         location: str,
         person: PersonDescriptor,
         recipient_person: Optional[PersonDescriptor] = None,
+        recipient_location: Optional[str] = None,
     ) -> CDPrimitive:
 
         builders = {
@@ -459,27 +461,23 @@ class MappingHandler(PipelineHandler):
                 location,
                 person,
                 recipient_person,
+                recipient_location,
             )
-        # Fallback
         return PTRANSPrimitive(actor=actor, destination=destination)
 
     def _build_ptrans(
-        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None
+        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None, rl=None
     ):
         return PTRANSPrimitive(
-            actor=actor,
-            subtype=subtype,
-            destination=dest,
-            source=source,
+            actor=actor, subtype=subtype, destination=dest, source=source
         )
 
     def _build_atrans(
-        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None
+        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None, rl=None
     ):
         _PLACEMENT = {"place", "put", "set", "drop", "deposit", "pour", "leave"}
         if subtype in _PLACEMENT and dest == "unknown" and loc != "unknown":
-            dest = loc
-            loc = "unknown"
+            dest, loc = loc, "unknown"
         return ATRANSPrimitive(
             actor=actor,
             subtype=subtype,
@@ -487,11 +485,12 @@ class MappingHandler(PipelineHandler):
             object_category=obj_cat,
             source=source,
             destination="user" if rp else dest,
-            recipient_person=rp if rp else None,
+            recipient_person=rp or None,
+            recipient_location=rl if rp else None,
         )
 
     def _build_grasp(
-        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None
+        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None, rl=None
     ):
         return GRASPPrimitive(
             actor=actor,
@@ -502,7 +501,7 @@ class MappingHandler(PipelineHandler):
         )
 
     def _build_accompany(
-        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None
+        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None, rl=None
     ):
         if not person.name and person.is_generic and obj not in ("unknown", ""):
             person = self._person_from_string(obj)
@@ -515,14 +514,14 @@ class MappingHandler(PipelineHandler):
         )
 
     def _build_attend(
-        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None
+        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None, rl=None
     ):
-        refined_subtype = subtype
+        refined = subtype
         if person.name or person.pose or person.gesture or person.clothing_item:
-            refined_subtype = "find_person"
+            refined = "find_person"
         return ATTENDPrimitive(
             actor=actor,
-            subtype=refined_subtype,
+            subtype=refined,
             object=obj,
             object_category=obj_cat,
             person=person if person.is_named or person.pose else None,
@@ -530,7 +529,7 @@ class MappingHandler(PipelineHandler):
         )
 
     def _build_query(
-        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None
+        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None, rl=None
     ):
         return QUERYPrimitive(
             actor=actor,
@@ -543,15 +542,10 @@ class MappingHandler(PipelineHandler):
         )
 
     def _build_speak(
-        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None
+        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None, rl=None
     ):
-        # Recipient resolution priority:
-        # 1. "of the person..." sentinel → person descriptor from SRL
-        # 2. rp — PersonDescriptor extracted from "to the person..." destination
-        # 3. plain dest string (named person or "user")
         if dest == "person_recipient":
-            # person has pose/gesture/clothing set by SRL's _find_of_recipient
-            has_descriptor = any(
+            has_desc = any(
                 [
                     person.pose,
                     person.gesture,
@@ -560,50 +554,84 @@ class MappingHandler(PipelineHandler):
                     person.name,
                 ]
             )
-            recipient_person = person if has_descriptor else None
-            recipient = "user"
-        elif rp:
-            recipient_person = rp
-            recipient = "user"
-        else:
-            recipient_person = None
-            recipient = dest if dest not in ("unknown", "") else "user"
+            return SPEAKPrimitive(
+                actor=actor,
+                subtype=subtype,
+                content=obj,
+                location=loc,
+                recipient="user",
+                recipient_person=person if has_desc else None,
+                recipient_location=rl,
+            )
+        if rp:
+            return SPEAKPrimitive(
+                actor=actor,
+                subtype=subtype,
+                content=obj,
+                location=loc,
+                recipient="user",
+                recipient_person=rp,
+                recipient_location=rl,
+            )
         return SPEAKPrimitive(
             actor=actor,
             subtype=subtype,
             content=obj,
             location=loc,
-            recipient=recipient,
-            recipient_person=recipient_person,
+            recipient=dest if dest not in ("unknown", "") else "user",
         )
 
     def _build_mtrans(
-        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None
+        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None, rl=None
     ):
-        recipient_person = rp if rp else None
-        recipient = "user" if rp else (dest if dest not in ("unknown", "") else "user")
+        if rp:
+            return MTRANSPrimitive(
+                actor=actor,
+                content=obj,
+                location="unknown",
+                recipient="user",
+                recipient_person=rp,
+                recipient_location=rl,
+            )
+        # Resolve sentinel left by answer-verb path in SRL
+        if dest == "person_recipient":
+            has_desc = any(
+                [
+                    person.pose,
+                    person.gesture,
+                    person.clothing_item,
+                    person.clothing_color,
+                    person.name,
+                ]
+            )
+            return MTRANSPrimitive(
+                actor=actor,
+                content=obj,
+                location="unknown",
+                recipient="user",
+                recipient_person=person if has_desc else None,
+                recipient_location=rl,
+            )
         return MTRANSPrimitive(
             actor=actor,
             content=obj,
             location="unknown",
-            recipient=recipient,
-            recipient_person=recipient_person,
+            recipient=(
+                dest if dest not in ("unknown", "person_recipient", "") else "user"
+            ),
         )
 
     def _build_social(
-        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None
+        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None, rl=None
     ):
         if not person.name and person.is_generic and obj not in ("unknown", ""):
             person = self._person_from_string(obj)
         return SOCIALPrimitive(
-            actor=actor,
-            subtype=subtype,
-            person=person,
-            location=loc,
+            actor=actor, subtype=subtype, person=person, location=loc
         )
 
     def _build_wait(
-        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None
+        self, subtype, actor, obj, obj_cat, source, dest, loc, person, rp=None, rl=None
     ):
         return WAITPrimitive(actor=actor, condition=obj)
 
@@ -804,8 +832,10 @@ class QueryExpansionHandler(PipelineHandler):
         mtrans = MTRANSPrimitive(
             actor=query.actor,
             content=content,
-            recipient=query.recipient,
-            location=query.location,
+            recipient=(
+                "user" if query.recipient == "person_recipient" else query.recipient
+            ),
+            location="unknown",  # robot reports to user wherever they are
         )
 
         return [attend, mtrans]
