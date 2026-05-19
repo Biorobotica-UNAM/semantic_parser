@@ -138,7 +138,7 @@ def parse_args() -> argparse.Namespace:
         "--input",
         "-i",
         type=Path,
-        default=Path("/home/fidel/CommandGenerator/CommandGenerator/gpsr_commands.txt"),
+        default=Path("/home/fidel/CommandGenerator/CommandGenerator/gpsr_dataset.txt"),
         help="Path to the input commands file (one command per line).",
     )
     parser.add_argument(
