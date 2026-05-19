@@ -1,0 +1,15 @@
+label: DRINK
+patterns:
+  - coffee
+  - tea
+  - iced tea
+  - water
+  - juice
+  - lemonade
+  - soda
+  - milk
+  - beer
+  - wine
+  - espresso
+  - cappuccino
+  - latte
