@@ -11,5 +11,12 @@
     >
     </node>
 
+    <node
+      pkg="semantic_parser"
+      exec="entity_extractor_node"
+      name="entity_extractor_node"
+      output="screen"
+    >
+    </node>
   </group>
 </launch>

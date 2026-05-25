@@ -1,0 +1,8 @@
+label: OBJECT
+patterns:
+  - cup
+  - bottle
+  - glass
+  - tray
+  - bag
+  - box

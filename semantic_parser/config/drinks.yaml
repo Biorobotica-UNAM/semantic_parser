@@ -1,0 +1,51 @@
+label: DRINK
+patterns:
+  - water
+  - sparkling water
+  - mineral water
+  - milk
+  - chocolate milk
+  - almond milk
+  - soy milk
+  - oat milk
+  - juice
+  - orange juice
+  - apple juice
+  - grape juice
+  - pineapple juice
+  - cranberry juice
+  - lemonade
+  - iced tea
+  - green tea
+  - black tea
+  - herbal tea
+  - chai tea
+  - tea
+  - coffee
+  - black coffee
+  - iced coffee
+  - latte
+  - cappuccino
+  - espresso
+  - mocha
+  - hot chocolate
+  - soda
+  - cola
+  - energy drink
+  - sports drink
+  - smoothie
+  - milkshake
+  - protein shake
+  - coconut water
+  - beer
+  - red wine
+  - white wine
+  - champagne
+  - whiskey
+  - vodka
+  - rum
+  - gin
+  - tequila
+  - cocktail
+  - margarita
+  - mojito
