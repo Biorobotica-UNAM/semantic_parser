@@ -1,0 +1,4 @@
+label: CONFIRM
+patterns:
+  - yes
+  - no
