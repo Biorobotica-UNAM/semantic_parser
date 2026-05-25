@@ -135,4 +135,10 @@ class SentenceEntityExtractor:
         if label.upper() == "NAME":
             return ExtractionResult(label=label, value=matches[0])
 
+        if label.upper() == "FOLLOW":
+            return ExtractionResult(label=label, value=matches[0])
+
+        if label.upper() == "CONFIRM":
+            return ExtractionResult(label=label, value=matches[0])
+
         return ExtractionResult(label=label, value=matches)
