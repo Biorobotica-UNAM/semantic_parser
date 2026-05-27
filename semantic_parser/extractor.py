@@ -1,9 +1,8 @@
 """
-Natural language entity extractor using spaCy with YAML-driven labels.
+Natural language entity extractor using YAML-driven labels.
 
 Design:
-    Factory Method  — NlpPipelineFactory builds the spaCy pipeline from YAML configs.
-    Facade          — SentenceEntityExtractor is the only public API.
+    Facade — SentenceEntityExtractor is the public API.
 
 BioRobotics Laboratory, Facultad de Ingenieria, UNAM
 """
@@ -15,9 +14,6 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-import spacy
-from spacy.language import Language
-from spacy.tokens import Doc
 
 # ---------------------------------------------------------------------------
 # Value Object
@@ -46,56 +42,36 @@ class ExtractionResult:
 @dataclass(frozen=True)
 class EntityConfig:
     label: str
-    patterns: list[str | list[dict]]
+    patterns: list[str]
 
 
 class EntityConfigLoader:
-    """Loads EntityConfig objects from a directory of YAML files."""
+    """Loads EntityConfig objects from YAML files."""
 
     @staticmethod
     def load_all(config_dir: Path) -> list[EntityConfig]:
         configs = []
+
         for path in sorted(config_dir.glob("*.yaml")):
             with path.open() as f:
                 data = yaml.safe_load(f)
+
             configs.append(EntityConfigLoader._parse(data, path))
+
         return configs
 
     @staticmethod
     def _parse(data: dict, path: Path) -> EntityConfig:
         label = data.get("label")
-        raw_patterns = data.get("patterns", [])
+        patterns = data.get("patterns", [])
+
         if not label:
             raise ValueError(f"Missing 'label' in {path}")
-        patterns = [
-            [{"LOWER": token} for token in p.split()] if " " in p else p.lower()
-            for p in raw_patterns
-        ]
-        return EntityConfig(label=label, patterns=patterns)
 
-
-# ---------------------------------------------------------------------------
-# Pipeline Factory
-# ---------------------------------------------------------------------------
-
-
-class NlpPipelineFactory:
-    """Builds a spaCy pipeline with an EntityRuler from YAML-derived configs."""
-
-    @classmethod
-    def create(cls, model: str, configs: list[EntityConfig]) -> Language:
-        nlp = spacy.load(model, exclude=["ner"])
-        ruler = nlp.add_pipe("entity_ruler")
-        ruler.add_patterns(cls._build_patterns(configs))
-        return nlp
-
-    @staticmethod
-    def _build_patterns(configs: list[EntityConfig]) -> list[dict]:
-        patterns = []
-        for cfg in configs:
-            for p in cfg.patterns:
-                patterns.append({"label": cfg.label, "pattern": p})
-        return patterns
+        return EntityConfig(
+            label=label.upper(),
+            patterns=[p.lower().replace("_", " ") for p in patterns],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -106,39 +82,53 @@ class NlpPipelineFactory:
 class SentenceEntityExtractor:
     """
     Public facade for label-driven entity extraction.
-
-    Usage:
-        extractor = SentenceEntityExtractor(
-            model="en_core_web_trf",
-            config_dir=Path("config/"),
-        )
-        result = extractor.extract("I want a coffee", label="DRINK")
-        print(result.value)  # "coffee"
     """
 
-    def __init__(self, model: str, config_dir: Path) -> None:
+    _SINGLE_VALUE_LABELS = {"NAME", "FOLLOW", "CONFIRM"}
+
+    def __init__(self, config_dir: Path) -> None:
+        self._catalog: dict[str, set[str]] = {}
+        self._build_catalog(config_dir)
+
+    def _build_catalog(self, config_dir: Path) -> None:
         configs = EntityConfigLoader.load_all(config_dir)
-        self._nlp: Language = NlpPipelineFactory.create(model, configs)
+
+        for cfg in configs:
+            self._catalog[cfg.label] = set(cfg.patterns)
 
     def extract(self, sentence: str, label: str) -> ExtractionResult:
-        """Extract entities matching *label* from sentence."""
-        doc: Doc = self._nlp(sentence)
-        matches = [
-            ent.text.lower().replace(" ", "_")
-            for ent in doc.ents
-            if ent.label_ == label.upper()
-        ]
+        """
+        Extract entities matching *label* from sentence.
+        """
+
+        sentence = sentence.lower().strip()
+        label = label.upper().strip()
+
+        if label not in self._catalog:
+            return ExtractionResult(label=label)
+
+        vocabulary = self._catalog[label]
+
+        # longest match first
+        ordered_patterns = sorted(
+            vocabulary,
+            key=len,
+            reverse=True,
+        )
+
+        matches = []
+
+        for pattern in ordered_patterns:
+            if pattern in sentence:
+                normalized = pattern.replace(" ", "_")
+
+                if normalized not in matches:
+                    matches.append(normalized)
 
         if not matches:
             return ExtractionResult(label=label)
 
-        if label.upper() == "NAME":
-            return ExtractionResult(label=label, value=matches[0])
-
-        if label.upper() == "FOLLOW":
-            return ExtractionResult(label=label, value=matches[0])
-
-        if label.upper() == "CONFIRM":
+        if label in self._SINGLE_VALUE_LABELS:
             return ExtractionResult(label=label, value=matches[0])
 
         return ExtractionResult(label=label, value=matches)
