@@ -9,6 +9,7 @@ BioRobotics Laboratory, Facultad de Ingenieria, UNAM
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -99,6 +100,12 @@ class SentenceEntityExtractor:
     def extract(self, sentence: str, label: str) -> ExtractionResult:
         """
         Extract entities matching *label* from sentence.
+
+        Two key guarantees:
+          1. Word-boundary matching  — "cola" won't fire inside "chocolate".
+          2. Match consumption       — once "chocolate milk" is matched, the
+             characters it occupied are blanked out so "milk" (and "chocolate")
+             can't fire again on the same span.
         """
 
         sentence = sentence.lower().strip()
@@ -109,21 +116,28 @@ class SentenceEntityExtractor:
 
         vocabulary = self._catalog[label]
 
-        # longest match first
-        ordered_patterns = sorted(
-            vocabulary,
-            key=len,
-            reverse=True,
-        )
+        # Longest patterns first — greedy, so "chocolate milk" wins over "milk".
+        ordered_patterns = sorted(vocabulary, key=len, reverse=True)
 
-        matches = []
+        # Working copy we'll blank out as patterns are consumed.
+        remaining = sentence
+        matches: list[str] = []
 
         for pattern in ordered_patterns:
-            if pattern in sentence:
+            # \b anchors ensure we match whole words only.
+            # re.escape handles any special characters in the pattern.
+            regex = r"\b" + re.escape(pattern) + r"\b"
+
+            if re.search(regex, remaining):
                 normalized = pattern.replace(" ", "_")
 
                 if normalized not in matches:
                     matches.append(normalized)
+
+                # Blank out every occurrence so sub-patterns can't re-match
+                # the same text (e.g. erase "chocolate milk" → "              "
+                # so lone "milk" and "chocolate" no longer appear there).
+                remaining = re.sub(regex, " " * len(pattern), remaining)
 
         if not matches:
             return ExtractionResult(label=label)
