@@ -15,6 +15,7 @@ from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
+from ament_index_python import get_package_share_directory
 
 from semantic_parser_interfaces.srv import ExtractEntity
 from semantic_parser.extractor import SentenceEntityExtractor
@@ -24,7 +25,7 @@ class EntityExtractorNode(Node):
     """ROS2 node that exposes the 'extract_entity' service."""
 
     _SERVICE_NAME = "extract_entity"
-    _CONFIG_DIR = Path(__file__).parent / "config"
+    _CONFIG_DIR = Path(get_package_share_directory("knowledge_bank")) / "dictionaries"
 
     def __init__(self) -> None:
         super().__init__("entity_extractor_node")
@@ -38,6 +39,7 @@ class EntityExtractorNode(Node):
         )
 
         self.get_logger().info(f"Service ready → '{self._SERVICE_NAME}'")
+        self.get_logger().info(f"Dictionaries loaded from → '{self._CONFIG_DIR}'")
 
     def _build_extractor(self) -> SentenceEntityExtractor:
         self.get_logger().info("Loading entity catalogs...")
