@@ -1245,7 +1245,113 @@ class AttendNormalizationHandler(PipelineHandler):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Handler 5 — Serialization (NEW in v2)
+# Handler 5 — Validation
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class ValidationHandler(PipelineHandler):
+    """
+    Pipeline step 5: semantic sanity check before serialization.
+
+    Reads:  data["cd_primitives"]  (list of CDPrimitive dataclasses)
+            data["raw_actions"]    (list of raw dicts from SRL — used to
+                                   detect a completely unrecognised command)
+    Writes: data["cd_primitives"]  (unchanged if valid)
+            data["aborted"]        True when the command is rejected
+            data["abort_reason"]   human-readable explanation (str)
+
+    On abort the handler short-circuits the chain: it does NOT call
+    _pass_to_next(), so SerializationHandler never runs and
+    data["cd_actions"] is never written.  The node reads data["aborted"]
+    and returns the error response.
+
+    Rejection rules (in order)
+    ──────────────────────────
+    1. No raw actions were extracted — the SRL found no actionable verb.
+    2. Every primitive is a DO-fallback (unknown verb, type=="DO").
+    3. A primitive is missing a required field:
+       • PTRANS  — destination is "unknown"
+       • ATRANS  — object or destination is "unknown"
+       • GRASP   — object is "unknown"
+       • ATTEND  — object is "unknown"
+       • ACCOMPANY — destination is "unknown"
+    """
+
+    # Fields that carry the "not found" sentinel set by earlier handlers.
+    _UNKNOWN = frozenset({"unknown", "", None})
+
+    # Primitive types that require a resolvable destination.
+    _NEEDS_DESTINATION = frozenset(
+        {"PTRANSPrimitive", "ATRANSPrimitive", "ACCOMPANYPrimitive"}
+    )
+    # Primitive types that require a resolvable object.
+    _NEEDS_OBJECT = frozenset({"ATRANSPrimitive", "GRASPPrimitive", "ATTENDPrimitive"})
+
+    def handle(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        # Rule 1 — SRL produced nothing at all.
+        if not data.get("raw_actions"):
+            return self._abort(data, "No actionable verb found in the command.")
+
+        primitives: List[CDPrimitive] = data.get("cd_primitives", [])
+
+        # Rule 2 — Every primitive fell back to the DO type.
+        if primitives and all(
+            p.__class__.__name__ == "DOPrimitive" for p in primitives
+        ):
+            return self._abort(
+                data, "Command verb(s) could not be mapped to any CD primitive."
+            )
+
+        # Rule 3 — Per-primitive required-field check.
+        for prim in primitives:
+            reason = self._check_primitive(prim)
+            if reason:
+                return self._abort(data, reason)
+
+        return self._pass_to_next(data)
+
+    # ── Per-primitive checks ──────────────────────────────────────────────────
+
+    def _check_primitive(self, prim: CDPrimitive) -> Optional[str]:
+        """Return an error string if the primitive is incomplete, else None."""
+        cls = prim.__class__.__name__
+
+        dest = getattr(prim, "destination", None)
+        obj = getattr(prim, "object", None)
+
+        if cls in self._NEEDS_DESTINATION and dest in self._UNKNOWN:
+            return (
+                f"{cls} requires a destination but none could be resolved "
+                f"(got '{dest}'). The command may refer to an unknown location."
+            )
+
+        if cls in self._NEEDS_OBJECT and obj in self._UNKNOWN:
+            return (
+                f"{cls} requires an object but none could be identified "
+                f"(got '{obj}'). The command may be missing a recognisable noun."
+            )
+
+        return None
+
+    # ── Abort helper ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _abort(data: Dict[str, Any], reason: str) -> Dict[str, Any]:
+        """
+        Mark the pipeline as aborted and stop propagation.
+
+        Does NOT call _pass_to_next so no downstream handler runs.
+        Sets data["aborted"] = True and data["abort_reason"] = reason.
+        """
+        data["aborted"] = True
+        data["abort_reason"] = reason
+        # Guarantee the node always finds cd_actions (empty on abort).
+        data.setdefault("cd_actions", [])
+        return data
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Handler 6 — Serialization (NEW in v2)
 # ──────────────────────────────────────────────────────────────────────────────
 
 

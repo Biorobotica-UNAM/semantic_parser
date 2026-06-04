@@ -34,6 +34,7 @@ from semantic_parser.pipeline.handlers import (
     MappingHandler,
     QueryExpansionHandler,
     AttendNormalizationHandler,
+    ValidationHandler,
     SerializationHandler,
     load_verb_map,
 )
@@ -89,6 +90,7 @@ class SemanticParserNode(Node):
             first.set_next(MappingHandler(verb_map))
             .set_next(QueryExpansionHandler())
             .set_next(AttendNormalizationHandler())
+            .set_next(ValidationHandler())
             .set_next(SerializationHandler())
         )
         return first
@@ -115,6 +117,14 @@ class SemanticParserNode(Node):
         t0 = time.perf_counter()
 
         result = self._pipeline.handle({"command": command})
+
+        # Validation rejected the command — return an aborted response.
+        if result.get("aborted"):
+            reason = result.get("abort_reason", "Unknown validation error.")
+            self.get_logger().warning(f"Command aborted: {reason}")
+            response.response = json.dumps({"status": "aborted", "reason": reason})
+            return response
+
         cd_actions = result.get("cd_actions", [])
 
         dt_ms = (time.perf_counter() - t0) * 1000.0
