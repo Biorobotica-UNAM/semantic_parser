@@ -23,6 +23,22 @@
 
     <node
       pkg="semantic_parser"
+      exec="semantic_node"
+      name="semantic_node"
+      output="screen"
+    >
+    </node>
+
+    <node
+      pkg="semantic_parser"
+      exec="entity_extractor_node"
+      name="entity_extractor_node"
+      output="screen"
+    >
+    </node>
+
+    <node
+      pkg="semantic_parser"
       exec="entity_extractor_node"
       name="entity_extractor_node"
       output="screen"
