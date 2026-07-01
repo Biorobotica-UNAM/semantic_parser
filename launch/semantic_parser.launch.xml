@@ -3,7 +3,6 @@
   <arg name="qwen_api_key" default=""/>
   <arg name="qwen_timeout_sec" default="15.0"/>
   <arg name="qwen_response_format" default="goals"/>
-  <arg name="use_entity_extractor" default="false"/>
 
   <group>
     <push_ros_namespace namespace="semantic_parser" />
@@ -37,13 +36,5 @@
     >
     </node>
 
-    <node
-      pkg="semantic_parser"
-      exec="entity_extractor_node"
-      name="entity_extractor_node"
-      output="screen"
-      if="$(var use_entity_extractor)"
-    >
-    </node>
   </group>
 </launch>
