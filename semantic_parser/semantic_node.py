@@ -34,6 +34,7 @@ from semantic_parser.pipeline.handlers import (
     MappingHandler,
     QueryExpansionHandler,
     AttendNormalizationHandler,
+    ValidationHandler,
     SerializationHandler,
     load_verb_map,
 )
@@ -55,13 +56,21 @@ class SemanticParserNode(Node):
 
     def __init__(self) -> None:
         super().__init__("semantic_parser_node")
+        self.declare_parameter("service_name", "semantic_parser")
+        self.declare_parameter("spacy_model", self._SPACY_MODEL)
+        self._service_name = (
+            self.get_parameter("service_name").get_parameter_value().string_value
+        )
+        self._spacy_model = (
+            self.get_parameter("spacy_model").get_parameter_value().string_value
+        )
         self._pipeline = self._build_pipeline()
         self._service = self.create_service(
             Parser,
-            "semantic_parser",
+            self._service_name,
             self._handle_request,
         )
-        self.get_logger().info("Semantic parser service ready.")
+        self.get_logger().info(f"Semantic parser service ready on '{self._service_name}'.")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Pipeline construction
@@ -77,8 +86,8 @@ class SemanticParserNode(Node):
         To add a new step: create a new handler in pipeline/handlers.py
         and chain it here — no other code needs to change.
         """
-        self.get_logger().info(f"Loading spaCy model ({self._SPACY_MODEL})...")
-        nlp = SpacyPipelineFactory.build(self._SPACY_MODEL)
+        self.get_logger().info(f"Loading spaCy model ({self._spacy_model})...")
+        nlp = SpacyPipelineFactory.build(self._spacy_model)
         self.get_logger().info("spaCy pipeline ready (EntityRuler + PersonDescTagger).")
 
         srl = SpacySRL(nlp)
@@ -89,6 +98,7 @@ class SemanticParserNode(Node):
             first.set_next(MappingHandler(verb_map))
             .set_next(QueryExpansionHandler())
             .set_next(AttendNormalizationHandler())
+            .set_next(ValidationHandler())
             .set_next(SerializationHandler())
         )
         return first
@@ -115,6 +125,14 @@ class SemanticParserNode(Node):
         t0 = time.perf_counter()
 
         result = self._pipeline.handle({"command": command})
+
+        # Validation rejected the command — return an aborted response.
+        if result.get("aborted"):
+            reason = result.get("abort_reason", "Unknown validation error.")
+            self.get_logger().warning(f"Command aborted: {reason}")
+            response.response = json.dumps({"status": "aborted", "reason": reason})
+            return response
+
         cd_actions = result.get("cd_actions", [])
 
         dt_ms = (time.perf_counter() - t0) * 1000.0

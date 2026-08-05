@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import find_namespace_packages, setup
 from glob import glob
 import os
 
@@ -7,7 +7,7 @@ package_name = "semantic_parser"
 setup(
     name=package_name,
     version="0.0.0",
-    packages=[package_name],
+    packages=find_namespace_packages(include=[package_name, f"{package_name}.*"]),
     data_files=[
         # Registro del paquete
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
@@ -27,6 +27,8 @@ setup(
     entry_points={
         "console_scripts": [
             "semantic_node = semantic_parser.semantic_node:main",
+            "qwen_semantic_node = semantic_parser.qwen_semantic_node:main",
+            "semantic_compare_node = semantic_parser.semantic_compare_node:main",
             "entity_extractor_node = semantic_parser.entity_extractor_node:main",
         ],
     },
