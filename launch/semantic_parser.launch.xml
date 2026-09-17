@@ -2,7 +2,6 @@
   <arg name="qwen_url" default=""/>
   <arg name="qwen_api_key" default=""/>
   <arg name="qwen_timeout_sec" default="15.0"/>
-  <arg name="qwen_response_format" default="goals"/>
   <arg name="use_spacy_parser" default="true"/>
   <arg name="use_entity_extractor" default="true"/>
   <arg name="gpsr_listen_service_name" default="listen_gpsr"/>
@@ -28,16 +27,6 @@
       <param name="listener_service" value="$(var gpsr_listener_service)"/>
       <param name="gpsr_listener_grammar" value="$(var gpsr_listener_grammar)"/>
       <param name="gpsr_listen_timeout_sec" value="$(var gpsr_listen_timeout_sec)"/>
-    </node>
-
-    <node
-      pkg="semantic_parser"
-      exec="semantic_node"
-      name="semantic_node"
-      output="screen"
-      if="$(var use_spacy_parser)"
-    >
-      <param name="service_name" value="semantic_parser_spacy"/>
     </node>
 
     <node
