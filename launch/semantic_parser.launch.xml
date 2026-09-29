@@ -40,13 +40,13 @@
       <param name="service_name" value="semantic_parser_spacy"/>
     </node>
 
-    <node
+<!--     <node
       pkg="semantic_parser"
       exec="semantic_node"
       name="semantic_node"
       output="screen"
     >
-    </node>
+    </node> -->
 
     <node
       pkg="semantic_parser"
