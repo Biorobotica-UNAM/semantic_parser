@@ -2,7 +2,8 @@
   <arg name="qwen_url" default=""/>
   <arg name="qwen_api_key" default=""/>
   <arg name="qwen_timeout_sec" default="15.0"/>
-  <arg name="use_spacy_parser" default="true"/>
+  <!-- El servicio de interpretación tiene un único proveedor: Qwen. -->
+  <arg name="qwen_response_format" default="goals"/>
   <arg name="use_entity_extractor" default="true"/>
   <arg name="gpsr_listen_service_name" default="listen_gpsr"/>
   <arg name="gpsr_listener_service" default="/hri/listener/listen"/>
@@ -31,16 +32,9 @@
 
     <node
       pkg="semantic_parser"
-      exec="semantic_node"
-      name="semantic_node"
-      output="screen"
-    >
-    </node>
-
-    <node
-      pkg="semantic_parser"
       exec="entity_extractor_node"
       name="entity_extractor_node"
+      if="$(var use_entity_extractor)"
       output="screen"
     >
     </node>

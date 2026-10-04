@@ -1,6 +1,5 @@
 from setuptools import find_namespace_packages, setup
 from glob import glob
-import os
 
 package_name = "semantic_parser"
 
@@ -15,20 +14,16 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         # Launch files
         ("share/" + package_name + "/launch", glob("launch/*.launch.xml")),
-        # JSON y otros recursos
-        ("share/" + package_name + "/" + package_name, glob(f"{package_name}/*.json")),
     ],
-    install_requires=["setuptools", "httpx"],
+    install_requires=["setuptools", "httpx", "PyYAML"],
     zip_safe=True,
     maintainer="fidel",
     maintainer_email="jorge.martinezram@ingenieria.unam.edu",
-    description="ROS2 service for Conceptual Dependency parsing via Ollama",
+    description="ROS2 services for Qwen goals and YAML entity extraction",
     license="Apache License 2.0",
     entry_points={
         "console_scripts": [
-            "semantic_node = semantic_parser.semantic_node:main",
             "qwen_semantic_node = semantic_parser.qwen_semantic_node:main",
-            "semantic_compare_node = semantic_parser.semantic_compare_node:main",
             "entity_extractor_node = semantic_parser.entity_extractor_node:main",
         ],
     },

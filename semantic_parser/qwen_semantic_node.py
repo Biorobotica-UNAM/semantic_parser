@@ -13,7 +13,6 @@ from rclpy.node import Node
 from listener_interfaces.srv import Listen
 from semantic_parser_interfaces.srv import Parser
 
-from semantic_parser.qwen_goal_adapter import goals_to_cd
 from semantic_parser.qwen_http_client import QwenHTTPClient
 
 
@@ -31,6 +30,7 @@ class QwenSemanticNode(Node):
         self.declare_parameter("gpsr_listen_timeout_sec", 30.0)
 
         self._service_name = self.get_parameter("service_name").value
+        # Los callbacks pueden esperar al listener sin impedir su respuesta.
         self._callback_group = ReentrantCallbackGroup()
         qwen_url = self.get_parameter("qwen_url").value or os.environ.get(
             "QWEN_SERVER_URL",
@@ -38,6 +38,9 @@ class QwenSemanticNode(Node):
         )
         api_key = self.get_parameter("qwen_api_key").value or os.environ.get("QWEN_API_KEY", "")
         self._response_format = str(self.get_parameter("response_format").value or "goals").lower()
+        # El adaptador CLIPS consume metas JSON; el antiguo modo CD fue retirado.
+        if self._response_format != "goals":
+            raise ValueError("response_format must be 'goals'; CD support was removed")
         self._client = QwenHTTPClient(
             base_url=qwen_url,
             api_key=api_key,
@@ -84,10 +87,12 @@ class QwenSemanticNode(Node):
             response.response = "[]"
             return response
 
-        response.response = self._translate_command(command, self._response_format)
+        # Devuelve metas; el cliente coordinador realiza después la llamada a CLIPS.
+        response.response = self._translate_command(command)
         return response
 
     def _handle_gpsr_listen_request(self, request, response):
+        # Este servicio escucha un comando nuevo; no utiliza el texto de la petición.
         del request
         command = self._listen_for_gpsr_command()
         if not command:
@@ -99,7 +104,7 @@ class QwenSemanticNode(Node):
             )
             return response
 
-        response.response = self._translate_command(command, "goals")
+        response.response = self._translate_command(command)
         return response
 
     def _listen_for_gpsr_command(self) -> str:
@@ -114,6 +119,7 @@ class QwenSemanticNode(Node):
         request.grammar = self._gpsr_listener_grammar
 
         future = self._listener_client.call_async(request)
+        # El segundo hilo del executor atiende la respuesta mientras este callback espera.
         deadline = time.monotonic() + self._gpsr_listen_timeout_sec
         while rclpy.ok() and time.monotonic() < deadline:
             if future.done():
@@ -144,7 +150,7 @@ class QwenSemanticNode(Node):
         self.get_logger().info(f"GPSR listener heard: '{command}'")
         return command
 
-    def _translate_command(self, command: str, response_format: str) -> str:
+    def _translate_command(self, command: str) -> str:
         t0 = time.perf_counter()
         try:
             qwen_response = self._client.translate(command)
@@ -159,13 +165,7 @@ class QwenSemanticNode(Node):
             )
 
         dt_ms = (time.perf_counter() - t0) * 1000.0
-        if response_format == "cd":
-            cd_actions = goals_to_cd(qwen_response.goals)
-            self.get_logger().info(
-                f"Qwen goals={qwen_response.goals} -> {len(cd_actions)} CD actions in {dt_ms:.1f} ms."
-            )
-            return json.dumps(cd_actions)
-
+        # Se conserva el orden de metas: CLIPS las procesa por su posición en la lista.
         payload = {
             "input": qwen_response.normalized_input or command,
             "goals": qwen_response.goals,
@@ -179,6 +179,7 @@ class QwenSemanticNode(Node):
 def main() -> None:
     rclpy.init()
     node = QwenSemanticNode()
+    # Necesario para que el callback bloqueante de escucha reciba su future.
     executor = MultiThreadedExecutor(num_threads=2)
     executor.add_node(node)
     executor.spin()

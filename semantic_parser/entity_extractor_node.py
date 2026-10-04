@@ -25,11 +25,12 @@ class EntityExtractorNode(Node):
     """ROS2 node that exposes the 'extract_entity' service."""
 
     _SERVICE_NAME = "extract_entity"
-    _CONFIG_DIR = Path(get_package_share_directory("knowledge_bank")) / "dictionaries"
 
     def __init__(self) -> None:
         super().__init__("entity_extractor_node")
 
+        # Catálogos compartidos con el robot; no son los del antiguo parser spaCy.
+        self._config_dir = Path(get_package_share_directory("knowledge_bank")) / "dictionaries"
         self._extractor = self._build_extractor()
 
         self._service = self.create_service(
@@ -39,13 +40,13 @@ class EntityExtractorNode(Node):
         )
 
         self.get_logger().info(f"Service ready → '{self._SERVICE_NAME}'")
-        self.get_logger().info(f"Dictionaries loaded from → '{self._CONFIG_DIR}'")
+        self.get_logger().info(f"Dictionaries loaded from → '{self._config_dir}'")
 
     def _build_extractor(self) -> SentenceEntityExtractor:
         self.get_logger().info("Loading entity catalogs...")
 
         extractor = SentenceEntityExtractor(
-            config_dir=self._CONFIG_DIR,
+            config_dir=self._config_dir,
         )
 
         self.get_logger().info("Entity catalogs ready.")
@@ -58,12 +59,14 @@ class EntityExtractorNode(Node):
         response: ExtractEntity.Response,
     ) -> ExtractEntity.Response:
 
+        # El executor pide una categoría concreta (name, confirm, order, etc.).
         sentence = request.sentence.strip().lower()
         category = request.category.strip().upper()
 
         if not sentence or not category:
             self.get_logger().warning("Empty sentence or category received.")
             response.value = ""
+            response.values = []
             return response
 
         self.get_logger().info(f"[{category}] '{sentence}'")
@@ -79,6 +82,7 @@ class EntityExtractorNode(Node):
 
         self.get_logger().info(f"Extracted in {dt_ms:.1f} ms → {result}")
 
+        # El contrato diferencia categorías de un valor de categorías de lista.
         if isinstance(result.value, list):
             response.values = result.value
             response.value = ""

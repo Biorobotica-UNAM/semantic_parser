@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import httpx
 
@@ -22,6 +21,7 @@ class QwenHTTPClient:
         self._timeout_sec = timeout_sec
 
     def translate(self, command: str) -> QwenResponse:
+        """Envía un comando y extrae metas; los errores se propagan al nodo ROS."""
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -32,6 +32,7 @@ class QwenHTTPClient:
             json={"command": command},
             timeout=self._timeout_sec,
         )
+        # Distingue errores HTTP de respuestas con JSON o estructura inválidos.
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict) or not payload.get("ok"):
@@ -45,6 +46,7 @@ class QwenHTTPClient:
         if not isinstance(prediction, dict):
             raise RuntimeError(f"Invalid Qwen prediction shape: {payload}")
 
+        # Aquí se valida la forma; la sintaxis y semántica de metas las trata CLIPS.
         goals = prediction.get("goals", [])
         if not isinstance(goals, list) or not all(isinstance(goal, str) for goal in goals):
             raise RuntimeError(f"Invalid Qwen goals shape: {payload}")

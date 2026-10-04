@@ -92,6 +92,7 @@ class SentenceEntityExtractor:
         self._build_catalog(config_dir)
 
     def _build_catalog(self, config_dir: Path) -> None:
+        # Carga única al arrancar: modificar los YAML requiere reiniciar el nodo.
         configs = EntityConfigLoader.load_all(config_dir)
 
         for cfg in configs:
