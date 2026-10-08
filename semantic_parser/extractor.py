@@ -112,6 +112,11 @@ class SentenceEntityExtractor:
         sentence = sentence.lower().strip()
         label = label.upper().strip()
 
+        if label == "LOCATION":
+            return self._extract_location(sentence)
+        if label == "CONFIRM":
+            return self._extract_confirmation(sentence)
+
         if label not in self._catalog:
             return ExtractionResult(label=label)
 
@@ -147,3 +152,52 @@ class SentenceEntityExtractor:
             return ExtractionResult(label=label, value=matches[0])
 
         return ExtractionResult(label=label, value=matches)
+
+    @staticmethod
+    def _extract_location(sentence: str) -> ExtractionResult:
+        """Extract a proposed destination, leaving existence to navigation.
+
+        Accept a bare name or common destination-request phrases. No semantic
+        location dictionary is used: navigation's live service is authoritative.
+        """
+        text = ' '.join(sentence.lower().split())
+        text = text.strip(' .,!?:;\"\'“”‘’()[]{}¡¿')
+        prefixes = (
+            r'^(?:justina[ ,]+)?(?:please\s+)?'
+            r'(?:(?:i would like you to|i want you to|can you|could you)\s+)?'
+            r'(?:go to|navigate to|take me to|the location is|the destination is|'
+            r'i meant|i mean|instead go to)\s+'
+        )
+        text = re.sub(prefixes, '', text)
+        text = re.sub(r',?\s+please$', '', text)
+        text = re.sub(r'^(?:the|a|an)\s+', '', text)
+        # Multiple destinations/negations are not a unique navigation answer.
+        if re.search(r'\b(?:and|or|then|not|no)\b', text):
+            return ExtractionResult(label='LOCATION')
+        if not text or not all(c.isalnum() or c in ' _-' for c in text):
+            return ExtractionResult(label='LOCATION')
+        return ExtractionResult(label='LOCATION', value=[re.sub(r'[\s-]+', '_', text)])
+
+    def _extract_confirmation(self, sentence: str) -> ExtractionResult:
+        """Return canonical yes/no; contradictory answers have no value."""
+        negative_words = {'no', 'nope', 'wrong', 'incorrect', "that's wrong",
+                          "that's incorrect", 'false', 'robot no'}
+        patterns = self._catalog.get('CONFIRM', set())
+        # Negated positive phrases must not be interpreted as approval.
+        positive_patterns = sorted(patterns - negative_words | {'true'}, key=lambda p: (-len(p), p))
+        negated = (r"\b(?:not|isn't|is not)\s+(?:" +
+                   '|'.join(re.escape(p) for p in positive_patterns) + r')\b')
+        negative = bool(re.search(negated, sentence))
+        remaining = re.sub(negated, ' ', sentence)
+        positive = False
+        for pattern in sorted(patterns, key=lambda p: (-len(p), p)):
+            regex = r'\b' + re.escape(pattern) + r'\b'
+            if re.search(regex, remaining):
+                if pattern in negative_words:
+                    negative = True
+                else:
+                    positive = True
+                remaining = re.sub(regex, ' ', remaining)
+        if positive == negative:
+            return ExtractionResult(label='CONFIRM')
+        return ExtractionResult(label='CONFIRM', value='no' if negative else 'yes')
