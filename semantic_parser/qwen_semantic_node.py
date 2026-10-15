@@ -6,6 +6,8 @@ import json
 import os
 import time
 
+import httpx
+
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -161,6 +163,11 @@ class QwenSemanticNode(Node):
                     "status": "aborted",
                     "input": command,
                     "reason": str(exc),
+                    "error_code": (
+                        "gpsr_unavailable"
+                        if isinstance(exc, (httpx.TransportError, ConnectionError, TimeoutError))
+                        else "semantic_error"
+                    ),
                 }
             )
 
